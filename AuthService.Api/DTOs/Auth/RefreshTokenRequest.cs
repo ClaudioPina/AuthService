@@ -1,0 +1,7 @@
+namespace AuthService.Api.Dtos.Auth
+{
+    public class RefreshTokenRequest
+    {
+        public string RefreshToken { get; set; } = null!;
+    }
+}
