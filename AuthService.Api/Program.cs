@@ -34,10 +34,14 @@ builder.Services.AddSwaggerWithJwt();
 builder.Services.AddAuthorization();
 
 // ── Autenticación JWT ──────────────────────────────────────────────────────────
-var jwtKey = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!);
+// La lectura de Jwt:Key se hace DENTRO del lambda porque AddJwtBearer registra
+// una acción de tipo Configure<JwtBearerOptions>, que se ejecuta de forma diferida
+// al resolver las opciones (no durante el setup del builder). Esto permite que
+// WebApplicationFactory inyecte su configuración de test antes de que se lea la clave.
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
+        var jwtKey = Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!);
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer           = true,
