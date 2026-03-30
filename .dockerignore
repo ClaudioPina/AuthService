@@ -1,0 +1,32 @@
+# Build artifacts
+**/bin/
+**/obj/
+
+# Test project (no va en la imagen de producción)
+AuthService.Tests/
+
+# IDE
+.vs/
+.idea/
+.vscode/
+
+# Git
+.git/
+.github/
+
+# Sensitive config (debe inyectarse como secret en producción)
+**/appsettings.json
+**/appsettings.Development.json
+**/appsettings.Production.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Docs
+docs/
+*.md

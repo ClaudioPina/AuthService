@@ -1,328 +1,351 @@
-
 # 🔐 AuthService – Microservicio de Autenticación
 
 **.NET 8 + JWT + Refresh Tokens + PostgreSQL**
 
-AuthService es un microservicio independiente desarrollado en **.NET 8** y responsable exclusivamente de la autenticación, autorización y gestión de sesiones de usuarios.
+AuthService es un microservicio independiente en **.NET 8 Minimal APIs** responsable exclusivamente de autenticación, autorización y gestión de sesiones de usuarios.
 
-Está diseñado para ser consumido por:
+Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros microservicios o APIs internas.
 
-- Aplicaciones web (SPA)
-- Aplicaciones móviles
-- Otros microservicios
-- APIs internas
-
-**👉 No contiene lógica de negocio (gastos, productos, órdenes, etc.).**
-**👉 Su única responsabilidad es identidad y seguridad.**
-
-### Tabla de contenidos
-
-- [🔐 AuthService – Microservicio de Autenticación](#-authservice--microservicio-de-autenticación)
-    - [Tabla de contenidos](#tabla-de-contenidos)
-  - [🎯 Responsabilidades del microservicio](#-responsabilidades-del-microservicio)
-  - [🧱 Arquitectura general](#-arquitectura-general)
-  - [🔐 Modelo de autenticación (híbrido)](#-modelo-de-autenticación-híbrido)
-      - [AuthService utiliza un modelo híbrido:](#authservice-utiliza-un-modelo-híbrido)
-      - [¿Por qué?](#por-qué)
-  - [🔁 Flujo de Login](#-flujo-de-login)
-  - [🔄 Flujo de Refresh Token](#-flujo-de-refresh-token)
-  - [🔒 Seguridad de contraseñas](#-seguridad-de-contraseñas)
-  - [🧠 Validación de sesión (Middleware)](#-validación-de-sesión-middleware)
-      - [Cada request autenticado pasa por un middleware que:](#cada-request-autenticado-pasa-por-un-middleware-que)
-      - [Esto permite:](#esto-permite)
-  - [🚀 Tecnologías utilizadas](#-tecnologías-utilizadas)
-  - [📦 Dependencias necesarias](#-dependencias-necesarias)
-    - [Instalación por consola](#instalación-por-consola)
-  - [🗂️ Estructura del proyecto](#️-estructura-del-proyecto)
-  - [🔐 Configuración de Oracle Wallet (OBLIGATORIA)](#-configuración-de-oracle-wallet-obligatoria)
-  - [⚙️ Configuración del archivo `appsettings.json`](#️-configuración-del-archivo-appsettingsjson)
-  - [▶️ Cómo ejecutar el servicio y probar en Swagger](#️-cómo-ejecutar-el-servicio-y-probar-en-swagger)
-  - [🔥 Endpoints implementados](#-endpoints-implementados)
-    - [🔓 Público](#-público)
-    - [🔐 Requiere JWT](#-requiere-jwt)
-  - [🧭 Roadmap de mejoras futuras](#-roadmap-de-mejoras-futuras)
-  - [🌟 Autor](#-autor)
+**No contiene lógica de negocio. Su única responsabilidad es identidad y seguridad.**
 
 ---
 
-## 🎯 Responsabilidades del microservicio
+## Tabla de contenidos
 
-**AuthService se encarga de:**
+- [Responsabilidades](#-responsabilidades)
+- [Arquitectura](#-arquitectura)
+- [Modelo de autenticación híbrido](#-modelo-de-autenticación-híbrido)
+- [Seguridad](#-seguridad)
+- [Tecnologías](#-tecnologías)
+- [Estructura del proyecto](#-estructura-del-proyecto)
+- [Tests](#-tests)
+- [Configuración](#-configuración)
+- [Cómo ejecutar](#-cómo-ejecutar)
+- [Endpoints](#-endpoints)
+- [CI/CD y despliegue](#-cicd-y-despliegue)
+- [Autor](#-autor)
 
-- Registro de usuarios
-- Verificación de email
-- Login con credenciales
-- Recuperación de contraseña
-- Emisión de Access Tokens (JWT)
-- Emisión y rotación de Refresh Tokens
-- Manejo de sesiones múltiples
-- Logout individual
-- Logout global
+---
+
+## 🎯 Responsabilidades
+
+- Registro de usuarios y verificación de email
+- Login con credenciales (email + password)
+- Emisión de Access Tokens (JWT, 15 min)
+- Emisión y rotación de Refresh Tokens (7 días)
+- Recuperación y reset de contraseña por email
+- Cambio de contraseña con cierre forzado de todas las sesiones
+- Manejo de sesiones múltiples (por dispositivo/cliente)
+- Logout individual y logout global
 - Revocación de sesiones específicas
-- Cambio de contraseña con cierre forzado de sesión
-- Validación de sesiones activas
+- Validación de sesiones activas en cada request
 
-**❌ Lo que AuthService NO hace:**
-
-- No maneja lógica de gastos
-- No almacena datos de negocio
-- No gestiona permisos específicos del dominio
-- No renderiza vistas
-- No depende de otros microservicios
-
-Esto garantiza:
-- Bajo acoplamiento
-- Alta reutilización
-- Escalabilidad
-
-
-Toda la información se gestiona mediante una base de datos **PostgreSQL**.
+**Lo que AuthService NO hace:** no maneja lógica de negocio, no almacena datos de dominio, no gestiona permisos específicos de la aplicación.
 
 ---
 
-## 🧱 Arquitectura general
+## 🧱 Arquitectura
 
 ```text
 [ Cliente / Frontend ]
         |
         v
-[ AuthService API ]
+[ AuthEndpoints (rutas Minimal API) ]
         |
         v
-[ PostgreSQL DB ]
+[ AutenticacionService (lógica de negocio) ]
+        |
+        +---> [ EmailService (Resend SDK) ]
+        |
+        v
+[ Repositories (Npgsql raw SQL) ]
+        |
+        v
+[ PostgreSQL ]
 ```
 
-- JWT → autenticación stateless
-- Sesiones en BD → control stateful
+El proyecto sigue una arquitectura en capas sin Entity Framework:
+
+| Capa | Descripción |
+|------|-------------|
+| `Endpoints/` | Define las rutas y extrae claims del JWT |
+| `Services/` | Contiene toda la lógica de negocio |
+| `Repositories/` | Acceso a datos con queries SQL directas (Npgsql) |
+| `Data/` | Manejo de conexiones con retry automático (Polly) |
+| `Middlewares/` | Validación de sesión activa en cada request autenticado |
+| `Utils/` | JWT, hashing de passwords, política de contraseñas, tokens |
+| `Configuration/` | Configuración de Swagger con soporte JWT Bearer |
 
 ---
 
-## 🔐 Modelo de autenticación (híbrido)
+## 🔐 Modelo de autenticación híbrido
 
-#### AuthService utiliza un modelo híbrido:
+AuthService combina autenticación **stateless** y **stateful**:
 
-- Stateless → JWT (Access Token)
-- Stateful → Sesiones persistidas en BD
+| Token | Tipo | Duración | Almacenamiento |
+|-------|------|----------|----------------|
+| Access Token (JWT) | Stateless | 15 min | Solo en cliente |
+| Refresh Token | Stateful | 7 días | Hash SHA-256 en BD |
 
-#### ¿Por qué?
-- Permite revocar sesiones
-- Permite logout global
-- Permite cerrar sesión al cambiar contraseña
-- Evita JWTs “eternos”
+### Flujo de Login
 
----
-
-## 🔁 Flujo de Login
-```text
-Usuario
-  |
-  |  email + password
-  v
-/auth/login
-  |
-  |-- valida credenciales
-  |-- crea sesión en BD
-  |-- genera access_token (JWT)
-  |-- genera refresh_token
-  v
-Cliente recibe tokens
+```
+Cliente → POST /auth/login
+  → Valida credenciales
+  → Crea sesión en BD (con IP y user-agent)
+  → Genera access_token (JWT con claims: id, email, id_sesion)
+  → Genera refresh_token (plain) → almacena hash en BD
+  → Retorna ambos tokens al cliente
 ```
 
----
+### Flujo de Refresh Token
 
-## 🔄 Flujo de Refresh Token
-
-```text
-Cliente
-  |
-  | refresh_token
-  v
-/auth/refresh-token
-  |
-  |-- valida sesión
-  |-- invalida sesión anterior
-  |-- crea nueva sesión
-  |-- emite nuevos tokens
-  v
-Cliente recibe nuevos tokens
+```
+Cliente → POST /auth/refresh-token (con refresh_token)
+  → Hashea el token recibido → busca en BD
+  → Invalida la sesión anterior
+  → Crea nueva sesión con nuevos tokens
+  → Retorna nuevos access_token y refresh_token
 ```
 
----
+### Validación de sesión (Middleware)
 
-## 🔒 Seguridad de contraseñas
+Cada request a rutas protegidas pasa por `ValidarSesionMiddleware`:
+1. Extrae el claim `id_sesion` del JWT
+2. Consulta `SESIONES_USUARIOS` en BD
+3. Si la sesión no existe o está inactiva → responde `401`
 
-- Hashing con BCrypt
-- Política mínima:
-  - ≥ 8 caracteres
-  - ≥ 1 mayúscula
-  - ≥ 1 minúscula
-  - ≥ 1 número
-  - ≥ 1 símbolo
-- Tokens sensibles nunca se almacenan en texto plano
+Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contraseña, revocación).
 
 ---
 
-## 🧠 Validación de sesión (Middleware)
+## 🔒 Seguridad
 
-#### Cada request autenticado pasa por un middleware que:
-1. Extrae sesion_id del JWT
-2. Consulta la sesión en BD
-3. Verifica que esté activa
-4. Bloquea la request si la sesión fue revocada
-
-#### Esto permite:
-- Expulsar usuarios tras cambio de contraseña
-- Invalidar JWTs antiguos
-- Control centralizado de sesiones
-
----
-
-## 🚀 Tecnologías utilizadas
-
-- **.NET 8 Minimal API**
-- **PostgreSQL**
-- **Npgsql**
-- **JWT (JSON Web Tokens)**
-- **BCrypt para hashing de contraseñas**
-- **Polly (reintentos automáticos de conexión a BD)**
-- **Swagger/OpenAPI**
-- **C# 12**
-- **Arquitectura de Microservicio Independiente**
+- **BCrypt** para hashing de contraseñas
+- **Política de contraseñas**: mínimo 8 caracteres, al menos 1 mayúscula, 1 minúscula, 1 número, 1 símbolo
+- **Tokens nunca en texto plano**: refresh tokens, tokens de verificación y reset se almacenan como SHA-256
+- **Refresh token rotation**: cada uso del refresh invalida la sesión anterior
+- **Logout forzado al cambiar contraseña**: invalida todas las sesiones activas
+- **Prevención de enumeración de usuarios**: `forgot-password` siempre retorna la misma respuesta
+- **Rate limiting por IP**: límites separados para register, login y forgot-password
+- **CORS configurable**: permisivo en Development, restringido en producción
+- **Docker non-root**: el contenedor corre con usuario `appuser` sin privilegios
 
 ---
 
-## 📦 Dependencias necesarias
+## 🚀 Tecnologías
 
-Estos paquetes deben estar instalados en el proyecto:
-
-```xml
-<PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
-<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
-<PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.22" />
-<PackageReference Include="Npgsql" Version="8.0.2" />
-<PackageReference Include="Polly" Version="8.6.5" />
-<PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-<PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.15.0" />
-```
-
-### Instalación por consola
-
-```bash
-dotnet add package BCrypt.Net-Next
-dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer
-dotnet add package Microsoft.AspNetCore.OpenApi
-dotnet add package Npgsql
-dotnet add package Polly
-dotnet add package Swashbuckle.AspNetCore
-dotnet add package System.IdentityModel.Tokens.Jwt
-```
+| Tecnología | Uso |
+|------------|-----|
+| .NET 8 Minimal APIs | Framework principal |
+| PostgreSQL + Npgsql | Base de datos (sin EF Core) |
+| JWT Bearer | Access tokens |
+| BCrypt.Net-Next | Hashing de contraseñas |
+| Polly | Retry automático en conexiones a BD |
+| Resend SDK | Envío de emails transaccionales |
+| Serilog | Logging estructurado |
+| Swashbuckle | Swagger / OpenAPI |
+| Fly.io | Hosting en producción |
+| Docker | Containerización |
+| GitHub Actions | CI/CD |
+| xUnit + Testcontainers | Testing con PostgreSQL real |
 
 ---
 
 ## 🗂️ Estructura del proyecto
 
-```text
-AuthService.Api/
+```
+AuthService/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml              # Build + tests en cada push/PR
+│       └── deploy.yml          # Deploy a Fly.io (solo si CI pasa)
 │
-├── Data/
-│   └── AppDbContext.cs
+├── AuthService.Api/
+│   ├── Configuration/
+│   │   └── SwaggerConfig.cs    # Swagger con JWT Bearer
+│   ├── Data/
+│   │   └── AppDbContext.cs     # Conexión con Polly retry
+│   ├── DTOs/Auth/              # DTOs de request por endpoint
+│   ├── Endpoints/
+│   │   └── AuthEndpoints.cs    # Definición de las 11 rutas
+│   ├── Middlewares/
+│   │   └── ValidarSesionMiddleware.cs
+│   ├── Models/                 # Entidades (Usuario, SesionUsuario, etc.)
+│   ├── Repositories/           # Acceso a datos (Npgsql raw SQL)
+│   ├── Services/
+│   │   ├── IAutenticacionService.cs
+│   │   ├── AutenticacionService.cs
+│   │   ├── IEmailService.cs
+│   │   └── EmailService.cs
+│   ├── Utils/
+│   │   ├── JwtGenerator.cs
+│   │   ├── PasswordHasher.cs
+│   │   ├── PasswordPolicy.cs
+│   │   └── TokenGenerator.cs
+│   └── Program.cs              # DI, middleware pipeline, configuración
 │
-├── Repositories/
-│   ├── UsuariosRepository.cs
-│   ├── SesionesUsuariosRepository.cs
-│   ├── VerificacionEmailRepository.cs
-│   └── ResetPasswordRepository.cs
+├── AuthService.Tests/
+│   ├── Unit/                   # Tests unitarios (no requieren Docker)
+│   │   ├── JwtGeneratorTests.cs
+│   │   ├── PasswordHasherTests.cs
+│   │   ├── PasswordPolicyTests.cs
+│   │   └── TokenGeneratorTests.cs
+│   └── Integration/            # Tests de integración (requieren Docker)
+│       ├── AuthWebAppFactory.cs
+│       ├── FakeEmailService.cs
+│       └── AuthIntegrationTests.cs
 │
-├── Middlewares/
-│   └── ValidarSesionMiddleware.cs
-│
-├── Dtos/
-│   └── Auth/
-│
-├── Utils/
-│   ├── PasswordHasher.cs
-│   ├── PasswordPolicy.cs
-│   ├── TokenGenerator.cs
-│   └── JwtGenerator.cs
-│
-├── Program.cs
-└── README.md
-
+├── appsettings.example.json    # Plantilla de configuración (sin secretos)
+├── script_DB.sql               # Esquema de base de datos
+├── Dockerfile
+└── fly.toml
 ```
 
 ---
 
-## ⚙️ Configuración del archivo `appsettings.json`
+## 🧪 Tests
 
-> ⚠️ **Este archivo NO debe subirse a GitHub.**
+El proyecto tiene 27 tests en total:
+
+| Tipo | Archivo | Tests |
+|------|---------|-------|
+| Unit | `PasswordPolicyTests.cs` | 7 |
+| Unit | `PasswordHasherTests.cs` | 4 |
+| Unit | `TokenGeneratorTests.cs` | 5 |
+| Unit | `JwtGeneratorTests.cs` | 3 |
+| Integration | `AuthIntegrationTests.cs` | 16 |
+
+Los **integration tests** levantan la aplicación real con una instancia de PostgreSQL en Docker (via Testcontainers) y reemplazan el `IEmailService` con un fake en memoria para capturar los emails enviados.
+
+```bash
+# Solo unitarios (rápidos, sin Docker)
+dotnet test --filter "FullyQualifiedName~Unit"
+
+# Solo integración (requiere Docker)
+dotnet test --filter "FullyQualifiedName~Integration"
+```
+
+---
+
+## ⚙️ Configuración
+
+> **El archivo `appsettings.json` no está en el repositorio.** Crea uno basándote en `appsettings.example.json`.
 
 ```json
 {
   "Jwt": {
-    "Key": "CLAVE_SECRETA_DE_256_BITS",
+    "Key": "<clave de mínimo 32 caracteres>",
     "Issuer": "AuthService",
-    "Audience": "AuthServiceClients"
+    "Audience": "AuthServiceClients",
+    "AccessTokenExpirationMinutes": 15
+  },
+  "Tokens": {
+    "RefreshTokenExpirationDays": 7,
+    "EmailVerificationExpirationHours": 24,
+    "PasswordResetExpirationHours": 1
+  },
+  "App": {
+    "BaseUrl": "https://tu-app.fly.dev"
+  },
+  "Email": {
+    "ResendApiKey": "re_...",
+    "FromAddress": "noreply@tudominio.com",
+    "FromName": "AuthService"
+  },
+  "Cors": {
+    "AllowedOrigins": ["https://tu-frontend.com"]
   },
   "ConnectionStrings": {
-    "PostgresDb": "Host=localhost;Database=authdb;Username=postgres;Password=TU_PASSWORD"
+    "PostgresDb": "Host=...;Database=...;Username=...;Password=..."
+  },
+  "Serilog": {
+    "MinimumLevel": { "Default": "Information" },
+    "WriteTo": [{ "Name": "Console" }]
   }
 }
 ```
 
----
-
-## ▶️ Cómo ejecutar el servicio y probar en Swagger
+En producción (Fly.io), las variables sensibles se configuran como secrets:
 
 ```bash
-dotnet run
+fly secrets set "Jwt__Key=..." "Email__ResendApiKey=re_..." "App__BaseUrl=https://..."
 ```
-
-1. Luego entrar a:
-   - https://localhost:5091/swagger
-2. Registrar un nuevo usuario
-3. Ejecutar `/auth/login`
-4. Copiar el `accessToken`
-5. Hacer clic en el botón **Authorize**:
-
-  ```
-  Bearer <accessToken>
-  ```
-
-Luego podrás usar endpoints que requieren autenticación.
 
 ---
 
-## 🔥 Endpoints implementados
+## ▶️ Cómo ejecutar
 
-### 🔓 Público
-
-```http
-POST /auth/register
-POST /auth/login
-GET /auth/verify-email/{token}
-POST /auth/forgot-password
-POST /auth/reset-password
-POST /auth/refresh-token
+```bash
+# Desarrollo local
+dotnet run --project AuthService.Api
 ```
 
-### 🔐 Requiere JWT
+Swagger disponible en `http://localhost:5091/swagger` (solo en entorno Development).
 
-```http
-POST /auth/change-password
-POST /auth/logout
-POST /auth/logout-all
-GET /auth/sessions
-POST /auth/sessions/revoke/{idSesion}
+Para probar endpoints protegidos:
+1. Registrar usuario: `POST /auth/register`
+2. Verificar email con el link del correo (o usar `verificar_url_dev` en la respuesta en Development)
+3. Login: `POST /auth/login` → copiar `accessToken`
+4. Click en **Authorize** en Swagger → ingresar `Bearer <accessToken>`
+
+```bash
+# Docker
+docker build -t authservice .
+docker run -p 8080:8080 \
+  -e "Jwt__Key=..." \
+  -e "ConnectionStrings__PostgresDb=..." \
+  authservice
 ```
 
+---
 
-## 🧭 Roadmap de mejoras futuras
+## 🔥 Endpoints
 
-- Integración con OAuth/Gmail login
-- Multi-factor authentication (MFA)
-- Roles y permisos avanzados
-- Logging estructurado con Serilog
-- API Gateway + Load balancing
+### Públicos
+
+| Método | Ruta | Rate Limit |
+|--------|------|------------|
+| POST | `/auth/register` | 5 req/min por IP |
+| POST | `/auth/login` | 10 req/min por IP |
+| GET | `/auth/verify-email/{token}` | — |
+| POST | `/auth/forgot-password` | 3 req/min por IP |
+| POST | `/auth/reset-password` | — |
+| POST | `/auth/refresh-token` | — |
+
+### Requieren JWT
+
+| Método | Ruta |
+|--------|------|
+| POST | `/auth/change-password` |
+| POST | `/auth/logout` |
+| POST | `/auth/logout-all` |
+| GET | `/auth/sessions` |
+| POST | `/auth/sessions/revoke/{idSesion}` |
+
+---
+
+## 🚢 CI/CD y despliegue
+
+**GitHub Actions:**
+- `ci.yml`: ejecuta build + todos los tests en cada push o PR a `main`
+- `deploy.yml`: despliega a Fly.io automáticamente cuando CI pasa en `main`
+
+**Requisito**: configurar el secret `FLY_API_TOKEN` en el repositorio de GitHub.
+
+```bash
+# Generar token de deploy
+fly tokens create deploy -x 999999h
+```
+
+**Fly.io setup inicial:**
+
+```bash
+fly auth login
+fly postgres create --name authservice-db --region gru
+fly postgres attach authservice-db --app authservice
+fly secrets set "Jwt__Key=..." "Email__ResendApiKey=..." "App__BaseUrl=..."
+```
 
 ---
 
@@ -330,4 +353,4 @@ POST /auth/sessions/revoke/{idSesion}
 
 Desarrollado por **Claudio Piña**
 
-Microservicio diseñado como base sólida para autenticación moderna con .NET + PostgreSQL.
+Microservicio de autenticación production-ready construido sobre .NET 8 + PostgreSQL con arquitectura en capas, tests automatizados y CI/CD.

@@ -28,8 +28,6 @@ Thumbs.db
 TestResults/
 coverage/
 
-# Docker
-.dockerignore
 
 # Logs
 *.log
