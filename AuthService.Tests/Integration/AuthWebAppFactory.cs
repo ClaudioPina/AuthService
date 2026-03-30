@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -78,10 +79,16 @@ namespace AuthService.Tests.Integration
                 // Singleton para que el mismo fake sea accesible desde el test
                 services.AddSingleton<IEmailService, FakeEmailService>();
 
-                // Desactivar rate limiting en tests: PostConfigure corre después de todos
-                // los Configure, por lo que sobreescribe las políticas de Program.cs.
-                // GetNoLimiter permite requests ilimitados — sin esto los tests obtienen 429.
-                services.PostConfigure<RateLimiterOptions>(options =>
+                // Desactivar rate limiting en tests.
+                // AddPolicy lanza ArgumentException si el nombre ya existe, por eso no
+                // alcanza con PostConfigure — primero hay que eliminar el IConfigureOptions
+                // que registró Program.cs y luego agregar políticas sin límite.
+                var rateLimiterConfig = services
+                    .Where(d => d.ServiceType == typeof(IConfigureOptions<RateLimiterOptions>))
+                    .ToList();
+                foreach (var d in rateLimiterConfig) services.Remove(d);
+
+                services.Configure<RateLimiterOptions>(options =>
                 {
                     options.AddPolicy("login-policy",          _ => RateLimitPartition.GetNoLimiter<string>("test"));
                     options.AddPolicy("register-policy",       _ => RateLimitPartition.GetNoLimiter<string>("test"));
