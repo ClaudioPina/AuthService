@@ -4,6 +4,13 @@ using Polly.Retry;
 
 namespace AuthService.Api.Data
 {
+    /// <summary>
+    /// Gestiona las conexiones a PostgreSQL con retry automático via Polly.
+    /// Soporta dos formas de configurar la conexión:
+    ///   1. Variable de entorno DATABASE_URL (Fly.io la inyecta automáticamente).
+    ///   2. ConnectionStrings:PostgresDb en appsettings.json (desarrollo local).
+    /// Npgsql puede parsear URIs postgres:// directamente.
+    /// </summary>
     public class AppDbContext
     {
         private readonly IConfiguration _config;
@@ -13,9 +20,10 @@ namespace AuthService.Api.Data
         {
             _config = config;
 
-            // Retry automático ante errores típicos de red en PostgreSQL
+            // Reintenta 3 veces ante errores de red, conexión rechazada o errores del servidor PostgreSQL,
+            // esperando 300ms, 600ms, 900ms entre intentos.
             _retryPolicy = Policy
-                .Handle<PostgresException>()
+                .Handle<NpgsqlException>()
                 .WaitAndRetryAsync(
                     retryCount: 3,
                     sleepDurationProvider: attempt => TimeSpan.FromMilliseconds(300 * attempt)
@@ -23,16 +31,19 @@ namespace AuthService.Api.Data
         }
 
         /// <summary>
-        /// Entrega una conexión PostgreSQL lista para usarse.
-        /// No la deja abierta — eso se maneja en los repositorios.
+        /// Crea una nueva conexión (sin abrirla todavía).
+        /// Prioriza DATABASE_URL (Fly.io) sobre el appsettings local.
         /// </summary>
         public NpgsqlConnection CreateConnection()
         {
-            return new NpgsqlConnection(_config.GetConnectionString("PostgresDb"));
+            var connString = Environment.GetEnvironmentVariable("DATABASE_URL")
+                             ?? _config.GetConnectionString("PostgresDb")!;
+            return new NpgsqlConnection(connString);
         }
 
         /// <summary>
-        /// Obtiene una conexión abierta con retry automático.
+        /// Retorna una conexión ya abierta, con retry automático.
+        /// Usar siempre con "using var conn = await _db.GetOpenConnectionAsync()".
         /// </summary>
         public async Task<NpgsqlConnection> GetOpenConnectionAsync()
         {

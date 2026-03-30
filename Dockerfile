@@ -19,8 +19,16 @@ RUN dotnet publish -c Release -o /app/publish
 FROM mcr.microsoft.com/dotnet/aspnet:8.0
 WORKDIR /app
 
-# Copiar app compilada
+# Crear un usuario sin privilegios para ejecutar la app.
+# Buena práctica de seguridad: si hubiera una vulnerabilidad,
+# el proceso no tendría acceso de root al contenedor.
+RUN adduser --disabled-password --gecos "" appuser
+
 COPY --from=build /app/publish .
+
+# Cambiar propietario de los archivos al nuevo usuario
+RUN chown -R appuser:appuser /app
+USER appuser
 
 # Exponer el puerto
 EXPOSE 8080

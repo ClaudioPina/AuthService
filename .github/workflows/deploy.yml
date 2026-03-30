@@ -1,0 +1,28 @@
+name: Deploy a Fly.io
+
+# Solo se ejecuta cuando el workflow CI pasa en main
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  deploy:
+    # Solo deployar si CI pasó exitosamente
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy a Fly.io
+        # --remote-only: el build Docker ocurre en los servidores de Fly.io,
+        # no en el runner de GitHub. Más rápido y no consume minutos de Actions.
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

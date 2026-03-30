@@ -23,7 +23,7 @@ namespace AuthService.Api.Middlewares
                 return;
             }
 
-            // Buscar claim sesion_id
+            // Buscar claim id_sesion
             var sesionIdClaim = context.User.Claims
                 .FirstOrDefault(c => c.Type == "id_sesion");
 

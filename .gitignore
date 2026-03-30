@@ -1,0 +1,40 @@
+# .NET build outputs
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.swp
+
+# Sensitive configuration
+appsettings.Development.json
+appsettings.Production.json
+appsettings.json
+
+# IDE
+.idea/
+.vscode/
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db
+
+# NuGet
+*.nupkg
+.nuget/
+
+# Test results
+TestResults/
+coverage/
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.bak

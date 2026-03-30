@@ -1,4 +1,3 @@
-using System.Data;
 using AuthService.Api.Data;
 using Npgsql;
 

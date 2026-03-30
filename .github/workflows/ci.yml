@@ -1,0 +1,32 @@
+name: CI
+
+# Se ejecuta en cada push o PR a la rama main
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restaurar dependencias
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Ejecutar tests
+        # Los tests de integración usan Testcontainers → necesitan Docker.
+        # El runner ubuntu-latest de GitHub Actions tiene Docker disponible.
+        run: dotnet test --no-build --configuration Release --verbosity normal
