@@ -29,4 +29,8 @@ jobs:
       - name: Ejecutar tests
         # Los tests de integración usan Testcontainers → necesitan Docker.
         # El runner ubuntu-latest de GitHub Actions tiene Docker disponible.
+        # TESTCONTAINERS_RYUK_DISABLED: desactiva el contenedor Ryuk de limpieza,
+        # que falla en GitHub Actions por restricciones del runner.
         run: dotnet test --no-build --configuration Release --verbosity normal
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
