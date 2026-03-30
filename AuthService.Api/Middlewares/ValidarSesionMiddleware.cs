@@ -25,7 +25,7 @@ namespace AuthService.Api.Middlewares
 
             // Buscar claim sesion_id
             var sesionIdClaim = context.User.Claims
-                .FirstOrDefault(c => c.Type == "sesion_id");
+                .FirstOrDefault(c => c.Type == "id_sesion");
 
             if (sesionIdClaim == null)
             {

@@ -15,31 +15,24 @@ namespace AuthService.Api.Repositories
         }
 
         // Crear token de recuperación
-        public async Task<long> CrearTokenResetAsync(
-            long idUsuario,
-            string token,
-            DateTime expiraEn)
+        public async Task<long> CrearTokenResetAsync(long idUsuario, string token, DateTime expiraEn)
         {
             const string sql = @"
                 INSERT INTO RESET_PASSWORD
-                    (id_usuario, token, expira_en,
-                    propietario, estado)
+                    (id_usuario, token, expira_en, estado)
                 VALUES
-                    (@p_id_usuario, @p_token,
-                    @p_expira_en, @p_id_usuario, 1)
+                    (@p_id, @p_token, @p_expira_en, 1)
                 RETURNING id_reset";
 
             using var conn = await _db.GetOpenConnectionAsync();
 
             using var cmd = new NpgsqlCommand(sql, conn);
 
-            cmd.Parameters.AddWithValue("p_id_usuario", idUsuario);
-            cmd.Parameters.AddWithValue("p_token", token);
+            cmd.Parameters.AddWithValue("p_id",        idUsuario);
+            cmd.Parameters.AddWithValue("p_token",     token);
             cmd.Parameters.AddWithValue("p_expira_en", expiraEn);
 
-            var result = await cmd.ExecuteScalarAsync();
-
-            return Convert.ToInt64(result);
+            return Convert.ToInt64(await cmd.ExecuteScalarAsync());
         }
 
 
@@ -74,25 +67,19 @@ namespace AuthService.Api.Repositories
 
 
         // Marcar token como usado
-        public async Task<bool> MarcarTokenComoUsadoAsync(long idReset, long idUsuarioAccion)
+        public async Task<bool> MarcarTokenComoUsadoAsync(long idReset)
         {
             const string sql = @"
-                UPDATE RESET_PASSWORD
-                SET estado = 0,
-                    usuario = @p_usuario,
-                    actualizacion = CURRENT_TIMESTAMP
-                WHERE id_reset = @p_id_reset
-                AND estado = 1";
+                UPDATE RESET_PASSWORD SET estado = 0
+                WHERE id_reset = @p_id AND estado = 1";
 
             using var conn = await _db.GetOpenConnectionAsync();
 
             using var cmd = new NpgsqlCommand(sql, conn);
 
-            cmd.Parameters.AddWithValue("p_usuario", idUsuarioAccion);
-            cmd.Parameters.AddWithValue("p_id_reset", idReset);
+            cmd.Parameters.AddWithValue("p_id", idReset);
 
-            var rows = await cmd.ExecuteNonQueryAsync();
-            return rows > 0;
+            return await cmd.ExecuteNonQueryAsync() > 0;
         }
 
 

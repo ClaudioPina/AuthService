@@ -205,9 +205,8 @@ app.MapPost("/auth/login", async (
 
     // === Generar tokens ===
 
-    // Crear refresh-token en texto plano
+    // Crear refresh-token en texto plano (el repositorio lo hashea internamente)
     var refreshToken = TokenGenerator.GenerateToken(64);
-    var refreshHash = TokenGenerator.HashToken(refreshToken);
     var refreshExpiraEn = DateTime.UtcNow.AddDays(7);
 
     // Datos de auditoría
@@ -217,7 +216,7 @@ app.MapPost("/auth/login", async (
     // Crear la sesión en BD y obtener el ID de sesión generado
     var idSesion = await sesionesRepo.CrearSesionAsync(
         usuario.IdUsuario,
-        refreshHash,
+        refreshToken,
         refreshExpiraEn,
         userAgent,
         ip
@@ -406,7 +405,7 @@ app.MapPost("/auth/reset-password", async (
     await usuariosRepo.ActualizarPasswordAsync(tokenInfo.IdUsuario, newHash);
 
     // Marcar token como usado
-    await resetRepo.MarcarTokenComoUsadoAsync(tokenInfo.IdReset, tokenInfo.IdUsuario);
+    await resetRepo.MarcarTokenComoUsadoAsync(tokenInfo.IdReset);
 
     return Results.Ok(new
     {
@@ -452,7 +451,7 @@ app.MapPost("/auth/refresh-token", async (
     // 4. Validar expiración
     if (sesion.ExpiraEn < DateTime.UtcNow)
     {
-        await sesionesRepo.InvalidarSesionPorHashAsync(hash, sesion.IdUsuario);
+        await sesionesRepo.InvalidarSesionPorHashAsync(hash);
 
         return Results.BadRequest(new
         {
@@ -477,17 +476,16 @@ app.MapPost("/auth/refresh-token", async (
     }
 
     // 6. Invalidar la sesión actual (rotación segura)
-    await sesionesRepo.InvalidarSesionPorHashAsync(hash, usuario.IdUsuario);
+    await sesionesRepo.InvalidarSesionPorHashAsync(hash);
 
-    // 7. Generar nuevos tokens
+    // 7. Generar nuevos tokens (el repositorio hashea internamente)
     var nuevoRefreshToken = TokenGenerator.GenerateToken(64);
-    var nuevoRefreshTokenHash = TokenGenerator.HashToken(nuevoRefreshToken);
     var expiraEn = DateTime.UtcNow.AddDays(7);
 
     // Crear nueva sesión y obtener ID
     var nuevoIdSesion = await sesionesRepo.CrearSesionAsync(
         usuario.IdUsuario,
-        nuevoRefreshTokenHash,
+        nuevoRefreshToken,
         expiraEn,
         null,
         null
@@ -577,7 +575,7 @@ app.MapPost("/auth/logout", async (
     var idSesion = long.Parse(http.User.Claims.First(c => c.Type == "id_sesion").Value);
     var idUsuario = long.Parse(http.User.Claims.First(c => c.Type == "id").Value);
 
-    var exito = await sesionesRepo.InvalidarSesionPorIdAsync(idSesion, idUsuario);
+    var exito = await sesionesRepo.InvalidarSesionPorIdAsync(idSesion);
 
     return Results.Ok(new
     {
@@ -654,7 +652,7 @@ app.MapPost("/auth/sessions/revoke/{idSesion:long}", async (
     if (sesion == null || sesion.IdUsuario != idUsuario)
         return Results.BadRequest(new { message = "No puedes revocar esta sesión." });
 
-    await sesionesRepo.InvalidarSesionPorIdAsync(idSesion, idUsuario);
+    await sesionesRepo.InvalidarSesionPorIdAsync(idSesion);
 
     return Results.Ok(new { message = "Sesión revocada correctamente." });
 })
