@@ -42,6 +42,7 @@ C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService-main\AuthServi
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService-main\AuthService.Api\obj\Debug\net8.0\AuthService.Api.pdb
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService-main\AuthService.Api\obj\Debug\net8.0\AuthService.Api.genruntimeconfig.cache
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService-main\AuthService.Api\obj\Debug\net8.0\ref\AuthService.Api.dll
+C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService\AuthService.Api\bin\Debug\net8.0\appsettings.json
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService\AuthService.Api\bin\Debug\net8.0\AuthService.Api.exe
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService\AuthService.Api\bin\Debug\net8.0\AuthService.Api.deps.json
 C:\Users\Claudio.Piña\Documents\Proyectos Personales\AuthService\AuthService.Api\bin\Debug\net8.0\AuthService.Api.runtimeconfig.json

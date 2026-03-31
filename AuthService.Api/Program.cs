@@ -159,7 +159,9 @@ app.UseMiddleware<ValidarSesionMiddleware>();
 app.MapHealthChecks("/health"); // GET /health → {"status":"Healthy"}
 app.MapAuthEndpoints();        // definidos en Endpoints/AuthEndpoints.cs
 
-app.Urls.Add("http://0.0.0.0:8080");
+// En producción (Docker/Fly.io) escucha en 0.0.0.0:8080
+if (!app.Environment.IsDevelopment())
+    app.Urls.Add("http://0.0.0.0:8080");
 
 app.Run();
 
