@@ -199,6 +199,23 @@ namespace AuthService.Api.Repositories
         }
 
         /// <summary>
+        /// Invalida todas las sesiones cuya fecha de expiración ya pasó.
+        /// Se llama periódicamente desde CleanupExpiredTokensService.
+        /// Retorna la cantidad de sesiones invalidadas.
+        /// </summary>
+        public async Task<int> InvalidarSesionesExpiradasAsync()
+        {
+            const string sql = @"
+                UPDATE SESIONES_USUARIOS SET estado = 0
+                WHERE expira_en < CURRENT_TIMESTAMP
+                AND estado = 1";
+
+            using var conn = await _db.GetOpenConnectionAsync();
+            using var cmd = new NpgsqlCommand(sql, conn);
+            return await cmd.ExecuteNonQueryAsync();
+        }
+
+        /// <summary>
         /// Limita a N sesiones activas por usuario: desactiva las más antiguas
         /// cuando se supera el máximo. Se llama después de crear una sesión nueva.
         /// Usa ROW_NUMBER() para identificar las sesiones a eliminar.

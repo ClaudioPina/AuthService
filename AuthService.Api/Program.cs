@@ -125,6 +125,9 @@ builder.Services.AddScoped<IEmailService, EmailService>();
 // Singleton: una sola instancia compartida para toda la vida de la app.
 builder.Services.AddSingleton<JwtGenerator>();
 
+// Background service: limpia tokens y sesiones expirados cada hora.
+builder.Services.AddHostedService<CleanupExpiredTokensService>();
+
 // Resend SDK: requiere HttpClient y las opciones de API key
 builder.Services.AddOptions();
 builder.Services.AddHttpClient<ResendClient>();

@@ -56,6 +56,9 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "El email y la contraseña son obligatorios." });
             }
 
+            if (!EsEmailValido(request.Email))
+                return Results.BadRequest(new { message = "El formato del email no es válido." });
+
             var (isValid, error) = PasswordPolicy.Validate(request.Password);
             if (!isValid)
                 return Results.BadRequest(new { message = error });
@@ -138,8 +141,9 @@ namespace AuthService.Api.Services
 
             var accessToken = _jwtGenerator.GenerateJwt(usuario, idSesion);
 
-            // Limitar sesiones activas a 4 por usuario.
-            await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, 4);
+            // Limitar sesiones activas por usuario (configurable, default 4).
+            var maxSesiones = _config.GetValue<int>("Sesiones:MaxActivasPorUsuario", 4);
+            await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, maxSesiones);
 
             _logger.LogInformation("Login exitoso para usuario {IdUsuario}", usuario.IdUsuario);
 
@@ -190,6 +194,9 @@ namespace AuthService.Api.Services
         {
             if (string.IsNullOrWhiteSpace(request.Email))
                 return Results.BadRequest(new { message = "El email es obligatorio." });
+
+            if (!EsEmailValido(request.Email))
+                return Results.BadRequest(new { message = "El formato del email no es válido." });
 
             // Respuesta siempre igual por seguridad (no revelar si el email existe).
             const string respuestaGenerica = "Si el correo está registrado, recibirás instrucciones para recuperar tu contraseña.";
@@ -398,6 +405,25 @@ namespace AuthService.Api.Services
             _logger.LogInformation("Sesión {IdSesion} revocada por usuario {IdUsuario}", idSesion, idUsuario);
 
             return Results.Ok(new { message = "Sesión revocada correctamente." });
+        }
+
+        // ── Helpers ───────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Valida el formato del email usando la clase MailAddress de .NET,
+        /// que implementa validación RFC 5322. Más confiable que una regex manual.
+        /// </summary>
+        private static bool EsEmailValido(string email)
+        {
+            try
+            {
+                _ = new System.Net.Mail.MailAddress(email);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
     }
 }

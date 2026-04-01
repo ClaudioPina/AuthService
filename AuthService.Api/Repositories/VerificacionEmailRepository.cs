@@ -71,5 +71,19 @@ namespace AuthService.Api.Repositories
 
             await cmd.ExecuteNonQueryAsync();
         }
+
+        // Desactivar tokens vencidos (usado por el servicio de limpieza periódica)
+        public async Task<int> InvalidarTokensExpiradosAsync()
+        {
+            const string sql = @"
+                UPDATE VERIFICACION_EMAIL
+                SET estado = 0
+                WHERE expira_en < CURRENT_TIMESTAMP
+                AND estado = 1";
+
+            using var conn = await _db.GetOpenConnectionAsync();
+            using var cmd = new NpgsqlCommand(sql, conn);
+            return await cmd.ExecuteNonQueryAsync();
+        }
     }
 }

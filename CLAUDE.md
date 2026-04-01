@@ -197,6 +197,7 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 
 ## Notas de contexto
 
-- `script_DB.sql` contiene tablas residuales de negocio (`TRANSACCIONES`, `ORGANIZACION`) que no pertenecen al microservicio de auth — ignorarlas.
-- Hay columnas de multi-tenancy (`propietario`) que son remanentes de la arquitectura anterior.
 - En entorno Development, `RegisterAsync` y `ForgotPasswordAsync` retornan la URL del token directamente en la respuesta (`verificar_url_dev`, `reset_url_dev`) para facilitar el testing sin email real.
+- El límite de 4 sesiones activas por usuario está hardcodeado en `AutenticacionService.LoginAsync` (parámetro `maxSesiones: 4`). Pendiente moverlo a configuración (`Sesiones:MaxActivasPorUsuario`).
+- `ResetPasswordRepository.InvalidarTokensExpiradosAsync()` existe pero nunca se llama. Los tokens expirados se acumulan en BD. Pendiente implementar un `BackgroundService` de limpieza periódica.
+- Swagger UI tiene un bug conocido con el botón Authorize en algunos entornos Windows — el header `Authorization` no se envía. Usar Bruno o Postman para probar endpoints protegidos.

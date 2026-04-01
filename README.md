@@ -206,7 +206,7 @@ AuthService/
 
 ## 🧪 Tests
 
-El proyecto tiene 27 tests en total:
+El proyecto tiene 35 tests en total:
 
 | Tipo | Archivo | Tests |
 |------|---------|-------|
@@ -283,11 +283,12 @@ dotnet run --project AuthService.Api
 
 Swagger disponible en `http://localhost:5091/swagger` (solo en entorno Development).
 
-Para probar endpoints protegidos:
+Para probar endpoints protegidos se recomienda usar **Bruno** o **Postman** — Swagger UI tiene un bug conocido en algunos entornos Windows donde el header `Authorization` no se envía correctamente.
+
 1. Registrar usuario: `POST /auth/register`
 2. Verificar email con el link del correo (o usar `verificar_url_dev` en la respuesta en Development)
 3. Login: `POST /auth/login` → copiar `accessToken`
-4. Click en **Authorize** en Swagger → ingresar `Bearer <accessToken>`
+4. En Bruno/Postman: configurar Auth → Bearer Token → pegar `accessToken`
 
 ```bash
 # Docker
