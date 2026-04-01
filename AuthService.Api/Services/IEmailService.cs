@@ -8,5 +8,7 @@ namespace AuthService.Api.Services
     {
         Task SendVerificationEmailAsync(string toEmail, string verificationLink);
         Task SendPasswordResetEmailAsync(string toEmail, string resetLink);
+        Task SendNewLoginNotificationAsync(string toEmail, string ip, string userAgent);
+        Task SendPasswordChangedNotificationAsync(string toEmail);
     }
 }

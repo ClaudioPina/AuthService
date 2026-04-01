@@ -71,3 +71,21 @@ CREATE TABLE RESET_PASSWORD (
 
 CREATE INDEX IDX_RESETPASS_ID_USUARIO ON RESET_PASSWORD (id_usuario);
 CREATE INDEX IDX_RESETPASS_TOKEN      ON RESET_PASSWORD (token);
+
+-- =========================================================
+-- TABLA: INTENTOS_LOGIN
+-- Registra intentos fallidos de login para implementar
+-- account lockout temporal. Se limpia periódicamente.
+-- bloqueado_hasta: NULL = no bloqueado, fecha = bloqueado hasta esa hora.
+-- =========================================================
+CREATE TABLE INTENTOS_LOGIN (
+    id_intento      INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email           VARCHAR(150) NOT NULL,
+    ip_origen       VARCHAR(45)  NOT NULL,
+    intentos        INTEGER      DEFAULT 1 NOT NULL,
+    ultimo_intento  TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    bloqueado_hasta TIMESTAMPTZ
+);
+
+CREATE INDEX IDX_INTENTOS_EMAIL    ON INTENTOS_LOGIN (email);
+CREATE INDEX IDX_INTENTOS_IP       ON INTENTOS_LOGIN (ip_origen);

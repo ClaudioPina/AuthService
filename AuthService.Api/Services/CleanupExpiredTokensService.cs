@@ -53,17 +53,19 @@ namespace AuthService.Api.Services
                 // Crear un scope temporal para obtener los repositorios Scoped
                 using var scope = _scopeFactory.CreateScope();
 
-                var resetRepo  = scope.ServiceProvider.GetRequiredService<ResetPasswordRepository>();
-                var verifRepo  = scope.ServiceProvider.GetRequiredService<VerificacionEmailRepository>();
-                var sesionRepo = scope.ServiceProvider.GetRequiredService<SesionesUsuariosRepository>();
+                var resetRepo    = scope.ServiceProvider.GetRequiredService<ResetPasswordRepository>();
+                var verifRepo    = scope.ServiceProvider.GetRequiredService<VerificacionEmailRepository>();
+                var sesionRepo   = scope.ServiceProvider.GetRequiredService<SesionesUsuariosRepository>();
+                var intentosRepo = scope.ServiceProvider.GetRequiredService<IntentosLoginRepository>();
 
-                var resetCount  = await resetRepo.InvalidarTokensExpiradosAsync();
-                var verifCount  = await verifRepo.InvalidarTokensExpiradosAsync();
-                var sesionCount = await sesionRepo.InvalidarSesionesExpiradasAsync();
+                var resetCount    = await resetRepo.InvalidarTokensExpiradosAsync();
+                var verifCount    = await verifRepo.InvalidarTokensExpiradosAsync();
+                var sesionCount   = await sesionRepo.InvalidarSesionesExpiradasAsync();
+                var intentosCount = await intentosRepo.LimpiarIntentosAntigousAsync();
 
                 _logger.LogInformation(
-                    "Cleanup completado: {Reset} tokens reset, {Verif} tokens verificación, {Sesiones} sesiones expiradas.",
-                    resetCount, verifCount, sesionCount);
+                    "Cleanup completado: {Reset} tokens reset, {Verif} tokens verificación, {Sesiones} sesiones, {Intentos} intentos login.",
+                    resetCount, verifCount, sesionCount, intentosCount);
             }
             catch (Exception ex)
             {

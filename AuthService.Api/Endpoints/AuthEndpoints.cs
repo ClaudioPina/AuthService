@@ -1,6 +1,7 @@
 using AuthService.Api.Dtos.Auth;
 using AuthService.Api.Services;
 
+
 namespace AuthService.Api.Endpoints
 {
     /// <summary>
@@ -64,6 +65,18 @@ namespace AuthService.Api.Endpoints
                     ctx.Connection.RemoteIpAddress?.ToString()))
                 .WithName("RefreshToken")
                 .WithOpenApi();
+
+            auth.MapPost("/google", async (
+                GoogleLoginRequest req,
+                IAutenticacionService svc,
+                HttpContext ctx) =>
+                await svc.GoogleLoginAsync(
+                    req.IdToken,
+                    ctx.Request.Headers["User-Agent"].ToString(),
+                    ctx.Connection.RemoteIpAddress?.ToString()))
+                .WithName("GoogleLogin")
+                .WithOpenApi()
+                .RequireRateLimiting("login-policy");
 
             // ── Rutas protegidas (requieren JWT válido) ─────────────────────────
 

@@ -18,6 +18,7 @@ namespace AuthService.Api.Services
         private readonly SesionesUsuariosRepository _sesionesRepo;
         private readonly VerificacionEmailRepository _verifRepo;
         private readonly ResetPasswordRepository _resetRepo;
+        private readonly IntentosLoginRepository _intentosRepo;
         private readonly JwtGenerator _jwtGenerator;
         private readonly IEmailService _emailService;
         private readonly IConfiguration _config;
@@ -29,21 +30,23 @@ namespace AuthService.Api.Services
             SesionesUsuariosRepository sesionesRepo,
             VerificacionEmailRepository verifRepo,
             ResetPasswordRepository resetRepo,
+            IntentosLoginRepository intentosRepo,
             JwtGenerator jwtGenerator,
             IEmailService emailService,
             IConfiguration config,
             IWebHostEnvironment env,
             ILogger<AutenticacionService> logger)
         {
-            _usuariosRepo = usuariosRepo;
-            _sesionesRepo = sesionesRepo;
-            _verifRepo    = verifRepo;
-            _resetRepo    = resetRepo;
-            _jwtGenerator = jwtGenerator;
-            _emailService = emailService;
-            _config       = config;
-            _env          = env;
-            _logger       = logger;
+            _usuariosRepo  = usuariosRepo;
+            _sesionesRepo  = sesionesRepo;
+            _verifRepo     = verifRepo;
+            _resetRepo     = resetRepo;
+            _intentosRepo  = intentosRepo;
+            _jwtGenerator  = jwtGenerator;
+            _emailService  = emailService;
+            _config        = config;
+            _env           = env;
+            _logger        = logger;
         }
 
         // ── Registro ─────────────────────────────────────────────────────────────
@@ -112,16 +115,43 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "El email y la contraseña son obligatorios." });
             }
 
+            // Verificar si la cuenta está bloqueada por intentos fallidos.
+            var bloqueadoHasta = await _intentosRepo.ObtenerBloqueoActivoAsync(request.Email);
+            if (bloqueadoHasta.HasValue)
+            {
+                var minutosRestantes = (int)Math.Ceiling((bloqueadoHasta.Value - DateTime.UtcNow).TotalMinutes);
+                _logger.LogWarning("Login bloqueado para {Email} hasta {Hasta}", request.Email, bloqueadoHasta.Value);
+                return Results.BadRequest(new
+                {
+                    message = $"Cuenta bloqueada temporalmente por múltiples intentos fallidos. Intenta nuevamente en {minutosRestantes} minutos."
+                });
+            }
+
             var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(request.Email);
 
             // Mensaje genérico para no filtrar si el email existe o no (user enumeration).
             const string credencialesInvalidas = "No es posible iniciar sesión con las credenciales proporcionadas.";
 
             if (usuario == null)
+            {
+                await _intentosRepo.RegistrarIntentoFallidoAsync(
+                    request.Email, ip ?? "desconocida",
+                    _config.GetValue<int>("Lockout:MaxIntentos", 5),
+                    _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
                 return Results.BadRequest(new { message = credencialesInvalidas });
+            }
 
             if (!PasswordHasher.VerifyPassword(request.Password, usuario.PasswordHash))
+            {
+                await _intentosRepo.RegistrarIntentoFallidoAsync(
+                    request.Email, ip ?? "desconocida",
+                    _config.GetValue<int>("Lockout:MaxIntentos", 5),
+                    _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
                 return Results.BadRequest(new { message = credencialesInvalidas });
+            }
+
+            // Login exitoso — limpiar registro de intentos fallidos.
+            await _intentosRepo.LimpiarIntentosAsync(request.Email);
 
             if (usuario.EmailVerificado == 0)
                 return Results.BadRequest(new { message = "Debes verificar tu email antes de iniciar sesión." });
@@ -146,6 +176,15 @@ namespace AuthService.Api.Services
             await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, maxSesiones);
 
             _logger.LogInformation("Login exitoso para usuario {IdUsuario}", usuario.IdUsuario);
+
+            // Notificar al usuario sobre el nuevo login para que detecte accesos no autorizados.
+            // Se dispara sin await para no bloquear la respuesta — si falla, solo se loguea.
+            _ = _emailService.SendNewLoginNotificationAsync(
+                    usuario.Email,
+                    ip ?? "desconocida",
+                    userAgent ?? "desconocido")
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al enviar notificación de login."),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
             return Results.Ok(new
             {
@@ -272,7 +311,20 @@ namespace AuthService.Api.Services
             var sesion = await _sesionesRepo.ObtenerSesionActivaPorHashAsync(hash);
 
             if (sesion == null)
+            {
+                // Verificar si el hash existe con estado=0 — significa que el token ya fue
+                // usado y alguien lo está reutilizando (posible robo). En ese caso,
+                // invalidamos TODAS las sesiones del usuario como medida de contención.
+                var sesionRevocada = await _sesionesRepo.ObtenerSesionPorHashAsync(hash);
+                if (sesionRevocada != null)
+                {
+                    await _sesionesRepo.InvalidarTodasPorUsuarioAsync(sesionRevocada.IdUsuario);
+                    _logger.LogWarning(
+                        "Refresh token reutilizado para usuario {IdUsuario}. Todas las sesiones revocadas.",
+                        sesionRevocada.IdUsuario);
+                }
                 return Results.BadRequest(new { message = "El token ya no es válido." });
+            }
 
             if (sesion.ExpiraEn < DateTime.UtcNow)
             {
@@ -340,6 +392,11 @@ namespace AuthService.Api.Services
             // Invalida todas las sesiones por seguridad — obliga a hacer login de nuevo.
             await _sesionesRepo.InvalidarTodasPorUsuarioAsync(usuario.IdUsuario);
 
+            // Notificar al usuario sobre el cambio de contraseña.
+            _ = _emailService.SendPasswordChangedNotificationAsync(usuario.Email)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al enviar notificación de cambio de contraseña."),
+                    TaskContinuationOptions.OnlyOnFaulted);
+
             _logger.LogInformation("Contraseña cambiada para usuario {IdUsuario}", idUsuario);
 
             return Results.Ok(new { message = "Tu contraseña ha sido actualizada. Por seguridad, vuelve a iniciar sesión." });
@@ -405,6 +462,98 @@ namespace AuthService.Api.Services
             _logger.LogInformation("Sesión {IdSesion} revocada por usuario {IdUsuario}", idSesion, idUsuario);
 
             return Results.Ok(new { message = "Sesión revocada correctamente." });
+        }
+
+        // ── Google Login ──────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Autentica un usuario con un ID Token de Google.
+        ///
+        /// Flujo:
+        /// 1. Validar el ID Token contra las claves públicas de Google.
+        /// 2. Extraer email, nombre, foto y google_sub del payload.
+        /// 3. Buscar usuario por google_sub → si existe, login directo.
+        /// 4. Buscar usuario por email → si existe, vincular google_sub y login.
+        /// 5. Si no existe → crear cuenta nueva con proveedor 'GOOGLE'.
+        /// 6. Retornar el mismo par de tokens que el login local.
+        ///
+        /// Configuración requerida: Google:ClientId en appsettings.json.
+        /// </summary>
+        public async Task<IResult> GoogleLoginAsync(string idToken, string? userAgent, string? ip)
+        {
+            if (string.IsNullOrWhiteSpace(idToken))
+                return Results.BadRequest(new { message = "El ID Token de Google es obligatorio." });
+
+            Google.Apis.Auth.GoogleJsonWebSignature.Payload payload;
+            try
+            {
+                var settings = new Google.Apis.Auth.GoogleJsonWebSignature.ValidationSettings
+                {
+                    Audience = [_config["Google:ClientId"]!]
+                };
+                payload = await Google.Apis.Auth.GoogleJsonWebSignature.ValidateAsync(idToken, settings);
+            }
+            catch (Google.Apis.Auth.InvalidJwtException ex)
+            {
+                _logger.LogWarning("ID Token de Google inválido: {Error}", ex.Message);
+                return Results.BadRequest(new { message = "El token de Google no es válido o ha expirado." });
+            }
+
+            var googleSub = payload.Subject;
+            var email     = payload.Email;
+            var nombre    = payload.Name;
+            var fotoUrl   = payload.Picture;
+
+            // Paso 1: buscar por google_sub (usuario ya vinculó Google antes)
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorGoogleSubAsync(googleSub);
+
+            if (usuario == null)
+            {
+                // Paso 2: buscar por email (puede tener cuenta local con el mismo email)
+                var usuarioExistente = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(email);
+                if (usuarioExistente != null)
+                {
+                    // Vincular Google a la cuenta local existente
+                    await _usuariosRepo.VincularGoogleSubAsync(usuarioExistente.IdUsuario, googleSub, fotoUrl);
+                    usuario = usuarioExistente;
+                    _logger.LogInformation("Google vinculado a cuenta existente para usuario {IdUsuario}", usuario.IdUsuario);
+                }
+                else
+                {
+                    // Paso 3: crear nueva cuenta Google
+                    var idUsuario = await _usuariosRepo.CrearUsuarioGoogleAsync(email, nombre, fotoUrl, googleSub);
+                    usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(idUsuario);
+                    _logger.LogInformation("Nueva cuenta creada via Google para {Email}", email);
+                }
+            }
+
+            if (usuario == null || usuario.Estado == 0)
+                return Results.BadRequest(new { message = "No se pudo procesar la autenticación con Google." });
+
+            var refreshToken    = TokenGenerator.GenerateToken(64);
+            var refreshExpiraEn = DateTime.UtcNow.AddDays(_config.GetValue<int>("Tokens:RefreshTokenExpirationDays", 7));
+
+            var idSesion = await _sesionesRepo.CrearSesionAsync(
+                usuario.IdUsuario, refreshToken, refreshExpiraEn, userAgent, ip);
+
+            var accessToken = _jwtGenerator.GenerateJwt(usuario, idSesion);
+            await _sesionesRepo.LimitarSesionesActivasAsync(
+                usuario.IdUsuario, _config.GetValue<int>("Sesiones:MaxActivasPorUsuario", 4));
+
+            _logger.LogInformation("Login Google exitoso para usuario {IdUsuario}", usuario.IdUsuario);
+
+            return Results.Ok(new
+            {
+                message = "Login con Google exitoso",
+                usuario = new { usuario.IdUsuario, usuario.Email, usuario.Nombre },
+                tokens  = new
+                {
+                    accessToken,
+                    accessTokenExpiresInMinutes = _jwtGenerator.ExpirationMinutes,
+                    refreshToken,
+                    refreshTokenExpiresAt = refreshExpiraEn
+                }
+            });
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────────

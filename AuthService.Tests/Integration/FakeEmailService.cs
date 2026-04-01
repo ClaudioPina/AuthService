@@ -25,5 +25,20 @@ namespace AuthService.Tests.Integration
             ResetEmails.Add((toEmail, resetLink));
             return Task.CompletedTask;
         }
+
+        public ConcurrentBag<(string To, string Ip, string UserAgent)> LoginNotifications { get; } = new();
+        public ConcurrentBag<string> PasswordChangedNotifications { get; } = new();
+
+        public Task SendNewLoginNotificationAsync(string toEmail, string ip, string userAgent)
+        {
+            LoginNotifications.Add((toEmail, ip, userAgent));
+            return Task.CompletedTask;
+        }
+
+        public Task SendPasswordChangedNotificationAsync(string toEmail)
+        {
+            PasswordChangedNotifications.Add(toEmail);
+            return Task.CompletedTask;
+        }
     }
 }

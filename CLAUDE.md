@@ -52,11 +52,11 @@ AuthEndpoints.cs (rutas + extracción de claims)
 | Carpeta | Propósito |
 |---------|-----------|
 | `Data/` | `AppDbContext` — manejo de conexiones con retry via Polly |
-| `Models/` | Entidades: `Usuario`, `SesionUsuario`, `RefreshToken`, `ResetPasswordToken` |
+| `Models/` | Entidades: `Usuario`, `SesionUsuario`, `ResetPasswordToken`, `IntentoLogin` |
 | `DTOs/Auth/` | DTOs de request para cada endpoint |
-| `Repositories/` | Acceso a datos (queries SQL directas con Npgsql) |
-| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend SDK) |
-| `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 11 rutas |
+| `Repositories/` | Acceso a datos (queries SQL directas con Npgsql): `UsuariosRepository`, `SesionesUsuariosRepository`, `VerificacionEmailRepository`, `ResetPasswordRepository`, `IntentosLoginRepository` |
+| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `CleanupExpiredTokensService` (BackgroundService) |
+| `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 12 rutas |
 | `Configuration/` | `SwaggerConfig.cs` — extension methods para Swagger con JWT Bearer |
 | `Middlewares/` | `ValidarSesionMiddleware` — valida sesión activa en DB |
 | `Utils/` | `JwtGenerator`, `PasswordHasher` (BCrypt), `PasswordPolicy`, `TokenGenerator` (SHA-256) |
@@ -66,10 +66,11 @@ AuthEndpoints.cs (rutas + extracción de claims)
 **PostgreSQL** — sin Entity Framework. El esquema se gestiona con `script_DB.sql`.
 
 Tablas principales:
-- `USUARIOS` — cuentas de usuario con BCrypt hash
+- `USUARIOS` — cuentas de usuario con BCrypt hash, soporte para login local y Google (`google_sub`, `foto_url`)
 - `SESIONES_USUARIOS` — sesiones activas con refresh token hasheado, IP y user-agent
 - `VERIFICACION_EMAIL` — tokens de verificación (TTL configurable, default 24h)
 - `RESET_PASSWORD` — tokens de reset (TTL configurable, default 1h)
+- `INTENTOS_LOGIN` — registro de intentos fallidos para account lockout temporal
 
 **Al modificar el esquema**: actualizar `script_DB.sql` y los repositories correspondientes. No hay migraciones automáticas.
 
@@ -91,6 +92,7 @@ Convención SQL del proyecto: parámetros con `@param` (Npgsql), nombres de tabl
 - `Swashbuckle.AspNetCore` — Swagger/OpenAPI
 - `Resend` (v0.2.2) — envío de emails transaccionales
 - `Serilog.AspNetCore` + `Serilog.Sinks.Console` — logging estructurado
+- `Google.Apis.Auth` (v1.68.0) — validación de ID Tokens de Google para OAuth login
 
 **AuthService.Tests**
 - `xUnit` — framework de testing
@@ -127,6 +129,7 @@ Para que `WebApplicationFactory` funcione, `Program.cs` termina con `public part
 | POST | `/auth/forgot-password` | Público | 3 req/min por IP |
 | POST | `/auth/reset-password` | Público | — |
 | POST | `/auth/refresh-token` | Público | — |
+| POST | `/auth/google` | Público | 10 req/min por IP |
 | POST | `/auth/change-password` | JWT requerido | — |
 | POST | `/auth/logout` | JWT requerido | — |
 | POST | `/auth/logout-all` | JWT requerido | — |
@@ -138,11 +141,15 @@ El rate limiting es por IP (`RateLimitPartition.GetFixedWindowLimiter`), no glob
 ## Seguridad implementada
 
 - **Refresh token rotation**: cada refresh invalida la sesión anterior y crea una nueva
+- **Refresh token reuse detection**: si se usa un token ya invalidado, se revocan TODAS las sesiones del usuario (protección contra token robado)
+- **Account lockout**: tras N intentos fallidos de login (configurable), la cuenta se bloquea por M minutos. Registrado en tabla `INTENTOS_LOGIN`
 - **Logout forzado al cambiar contraseña**: `ChangePasswordAsync` invalida TODAS las sesiones
+- **Notificaciones de seguridad**: emails fire-and-forget al detectar nuevo login o cambio de contraseña
 - **Prevención de enumeración de usuarios**: `ForgotPasswordAsync` siempre retorna la misma respuesta
 - **Tokens hasheados**: refresh tokens y tokens de email/reset se almacenan como SHA-256, nunca en texto plano
 - **Docker no-root**: el contenedor corre con usuario `appuser` sin privilegios
 - **CORS configurable**: en Development acepta cualquier origen; en producción lee `Cors:AllowedOrigins`
+- **Google OAuth**: valida ID Tokens via `GoogleJsonWebSignature.ValidateAsync()` — nunca confía en datos del cliente
 
 ## Configuración esperada (appsettings.json)
 
@@ -163,13 +170,31 @@ Secciones requeridas:
     "EmailVerificationExpirationHours": 24,
     "PasswordResetExpirationHours": 1
   },
+  "Sesiones": {
+    "MaxActivasPorUsuario": 4
+  },
+  "Lockout": {
+    "MaxIntentos": 5,
+    "MinutosBloqueo": 15
+  },
+  "Google": {
+    "ClientId": "<client_id de Google Cloud Console>"
+  },
   "App": {
     "BaseUrl": "https://tu-app.fly.dev"
   },
   "Email": {
+    "Provider": "Resend",
     "ResendApiKey": "re_...",
     "FromAddress": "noreply@tudominio.com",
-    "FromName": "AuthService"
+    "FromName": "AuthService",
+    "Smtp": {
+      "Host": "localhost",
+      "Port": 1025,
+      "EnableSsl": false,
+      "User": "",
+      "Password": ""
+    }
   },
   "Cors": {
     "AllowedOrigins": ["https://tu-frontend.com"]
@@ -183,6 +208,8 @@ Secciones requeridas:
   }
 }
 ```
+
+`Email:Provider` acepta `"Resend"` (producción) o `"Smtp"` (desarrollo local con MailHog/Mailtrap).
 
 ## CI/CD
 
@@ -198,6 +225,7 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 ## Notas de contexto
 
 - En entorno Development, `RegisterAsync` y `ForgotPasswordAsync` retornan la URL del token directamente en la respuesta (`verificar_url_dev`, `reset_url_dev`) para facilitar el testing sin email real.
-- El límite de 4 sesiones activas por usuario está hardcodeado en `AutenticacionService.LoginAsync` (parámetro `maxSesiones: 4`). Pendiente moverlo a configuración (`Sesiones:MaxActivasPorUsuario`).
-- `ResetPasswordRepository.InvalidarTokensExpiradosAsync()` existe pero nunca se llama. Los tokens expirados se acumulan en BD. Pendiente implementar un `BackgroundService` de limpieza periódica.
-- Swagger UI tiene un bug conocido con el botón Authorize en algunos entornos Windows — el header `Authorization` no se envía. Usar Bruno o Postman para probar endpoints protegidos.
+- Swagger UI tiene un bug conocido con el botón Authorize en algunos entornos Windows — el header `Authorization` no se envía. Usar **Bruno** o **Postman** para probar endpoints protegidos.
+- El endpoint `POST /auth/google` requiere un ID Token válido generado por el frontend usando Google Sign-In. Para obtener uno durante desarrollo, usar el Google OAuth Playground. El `Google:ClientId` debe configurarse en `appsettings.json`.
+- `CleanupExpiredTokensService` corre cada hora como `IHostedService`. Usa `IServiceScopeFactory` para crear un scope temporal por ejecución (patrón obligatorio cuando un Singleton necesita servicios Scoped).
+- Las notificaciones de login y cambio de contraseña son fire-and-forget (`_ = task.ContinueWith(...)`). Si fallan, solo se loguea un warning — no afectan el flujo principal.

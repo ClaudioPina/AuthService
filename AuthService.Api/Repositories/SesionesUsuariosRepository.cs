@@ -55,6 +55,36 @@ namespace AuthService.Api.Repositories
         }
 
         /// <summary>
+        /// Busca una sesión por hash sin filtrar por estado.
+        /// Se usa para detectar reutilización de refresh tokens: si el hash existe
+        /// con estado=0, significa que el token ya fue usado/revocado y alguien
+        /// lo está intentando usar de nuevo (posible robo).
+        /// </summary>
+        public async Task<SesionUsuario?> ObtenerSesionPorHashAsync(string tokenHash)
+        {
+            const string sql = @"
+                SELECT id_sesion, id_usuario, token_refresh, expira_en, estado
+                FROM SESIONES_USUARIOS
+                WHERE token_refresh = @p_hash";
+
+            using var conn = await _db.GetOpenConnectionAsync();
+            using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("p_hash", tokenHash);
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            if (!await reader.ReadAsync()) return null;
+
+            return new SesionUsuario
+            {
+                IdSesion  = reader.GetInt64(0),
+                IdUsuario = reader.GetInt64(1),
+                TokenHash = reader.GetString(2),
+                ExpiraEn  = reader.GetDateTime(3),
+                Estado    = reader.GetInt32(4)
+            };
+        }
+
+        /// <summary>
         /// Busca una sesión activa por el hash del refresh token.
         /// El caller debe hashear el token recibido antes de llamar este método.
         /// </summary>

@@ -72,5 +72,60 @@ namespace AuthService.Api.Services
             await _resend.EmailSendAsync(message);
             _logger.LogInformation("Email de reset de contraseña enviado a {Email}", toEmail);
         }
+
+        /// <summary>
+        /// Notifica al usuario sobre un nuevo inicio de sesión en su cuenta.
+        /// Se envía en cada login exitoso para que el usuario detecte accesos no autorizados.
+        /// </summary>
+        public async Task SendNewLoginNotificationAsync(string toEmail, string ip, string userAgent)
+        {
+            var from = $"{_config["Email:FromName"]} <{_config["Email:FromAddress"]}>";
+
+            var message = new EmailMessage
+            {
+                From     = from,
+                Subject  = "Nuevo inicio de sesión en tu cuenta",
+                HtmlBody = $"""
+                    <h2>Nuevo inicio de sesión detectado</h2>
+                    <p>Se ha iniciado sesión en tu cuenta con los siguientes datos:</p>
+                    <ul>
+                        <li><strong>IP:</strong> {ip}</li>
+                        <li><strong>Dispositivo:</strong> {userAgent}</li>
+                        <li><strong>Fecha:</strong> {DateTime.UtcNow:dd/MM/yyyy HH:mm} UTC</li>
+                    </ul>
+                    <p>Si fuiste tú, puedes ignorar este correo.</p>
+                    <p>Si no fuiste tú, cambia tu contraseña inmediatamente.</p>
+                    """
+            };
+            message.To.Add(toEmail);
+
+            await _resend.EmailSendAsync(message);
+            _logger.LogInformation("Notificación de login enviada a {Email}", toEmail);
+        }
+
+        /// <summary>
+        /// Notifica al usuario que su contraseña fue cambiada.
+        /// Útil para detectar cambios no autorizados.
+        /// </summary>
+        public async Task SendPasswordChangedNotificationAsync(string toEmail)
+        {
+            var from = $"{_config["Email:FromName"]} <{_config["Email:FromAddress"]}>";
+
+            var message = new EmailMessage
+            {
+                From     = from,
+                Subject  = "Tu contraseña ha sido cambiada",
+                HtmlBody = $"""
+                    <h2>Contraseña actualizada</h2>
+                    <p>Tu contraseña fue cambiada el {DateTime.UtcNow:dd/MM/yyyy HH:mm} UTC.</p>
+                    <p>Todas tus sesiones activas han sido cerradas por seguridad.</p>
+                    <p>Si no realizaste este cambio, contacta al soporte inmediatamente.</p>
+                    """
+            };
+            message.To.Add(toEmail);
+
+            await _resend.EmailSendAsync(message);
+            _logger.LogInformation("Notificación de cambio de contraseña enviada a {Email}", toEmail);
+        }
     }
 }

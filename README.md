@@ -31,6 +31,7 @@ Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros m
 
 - Registro de usuarios y verificación de email
 - Login con credenciales (email + password)
+- Login con Google OAuth (ID Token)
 - Emisión de Access Tokens (JWT, 15 min)
 - Emisión y rotación de Refresh Tokens (7 días)
 - Recuperación y reset de contraseña por email
@@ -39,6 +40,9 @@ Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros m
 - Logout individual y logout global
 - Revocación de sesiones específicas
 - Validación de sesiones activas en cada request
+- Bloqueo temporal de cuenta tras intentos fallidos de login
+- Notificaciones por email en nuevos logins y cambios de contraseña
+- Limpieza automática de tokens y sesiones expirados
 
 **Lo que AuthService NO hace:** no maneja lógica de negocio, no almacena datos de dominio, no gestiona permisos específicos de la aplicación.
 
@@ -55,13 +59,15 @@ Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros m
         v
 [ AutenticacionService (lógica de negocio) ]
         |
-        +---> [ EmailService (Resend SDK) ]
+        +---> [ IEmailService → EmailService (Resend) / SmtpEmailService (local) ]
         |
         v
 [ Repositories (Npgsql raw SQL) ]
         |
         v
 [ PostgreSQL ]
+
+[ CleanupExpiredTokensService (BackgroundService) ] → Repositories (cada 1h)
 ```
 
 El proyecto sigue una arquitectura en capas sin Entity Framework:
@@ -125,9 +131,13 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 - **Política de contraseñas**: mínimo 8 caracteres, al menos 1 mayúscula, 1 minúscula, 1 número, 1 símbolo
 - **Tokens nunca en texto plano**: refresh tokens, tokens de verificación y reset se almacenan como SHA-256
 - **Refresh token rotation**: cada uso del refresh invalida la sesión anterior
+- **Refresh token reuse detection**: si se detecta un token ya usado, se revocan TODAS las sesiones activas del usuario
+- **Account lockout**: bloqueo temporal configurable tras N intentos fallidos (default: 5 intentos, 15 min)
 - **Logout forzado al cambiar contraseña**: invalida todas las sesiones activas
+- **Notificaciones de seguridad**: email al detectar nuevo login desde IP nueva o cambio de contraseña
 - **Prevención de enumeración de usuarios**: `forgot-password` siempre retorna la misma respuesta
-- **Rate limiting por IP**: límites separados para register, login y forgot-password
+- **Rate limiting por IP**: límites separados para register, login, google y forgot-password
+- **Google OAuth**: validación de ID Tokens server-side vía `Google.Apis.Auth` — no se confía en datos del cliente
 - **CORS configurable**: permisivo en Development, restringido en producción
 - **Docker non-root**: el contenedor corre con usuario `appuser` sin privilegios
 
@@ -142,7 +152,9 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 | JWT Bearer | Access tokens |
 | BCrypt.Net-Next | Hashing de contraseñas |
 | Polly | Retry automático en conexiones a BD |
-| Resend SDK | Envío de emails transaccionales |
+| Resend SDK | Envío de emails transaccionales (producción) |
+| System.Net.Mail | Envío de emails SMTP (desarrollo local) |
+| Google.Apis.Auth | Validación de ID Tokens de Google OAuth |
 | Serilog | Logging estructurado |
 | Swashbuckle | Swagger / OpenAPI |
 | Fly.io | Hosting en producción |
@@ -168,16 +180,23 @@ AuthService/
 │   │   └── AppDbContext.cs     # Conexión con Polly retry
 │   ├── DTOs/Auth/              # DTOs de request por endpoint
 │   ├── Endpoints/
-│   │   └── AuthEndpoints.cs    # Definición de las 11 rutas
+│   │   └── AuthEndpoints.cs    # Definición de las 12 rutas
 │   ├── Middlewares/
 │   │   └── ValidarSesionMiddleware.cs
-│   ├── Models/                 # Entidades (Usuario, SesionUsuario, etc.)
+│   ├── Models/                 # Entidades (Usuario, SesionUsuario, IntentoLogin, etc.)
 │   ├── Repositories/           # Acceso a datos (Npgsql raw SQL)
+│   │   ├── UsuariosRepository.cs
+│   │   ├── SesionesUsuariosRepository.cs
+│   │   ├── VerificacionEmailRepository.cs
+│   │   ├── ResetPasswordRepository.cs
+│   │   └── IntentosLoginRepository.cs
 │   ├── Services/
 │   │   ├── IAutenticacionService.cs
 │   │   ├── AutenticacionService.cs
 │   │   ├── IEmailService.cs
-│   │   └── EmailService.cs
+│   │   ├── EmailService.cs         # Resend SDK (producción)
+│   │   ├── SmtpEmailService.cs     # SMTP (desarrollo local)
+│   │   └── CleanupExpiredTokensService.cs  # BackgroundService (limpieza cada 1h)
 │   ├── Utils/
 │   │   ├── JwtGenerator.cs
 │   │   ├── PasswordHasher.cs
@@ -245,13 +264,31 @@ dotnet test --filter "FullyQualifiedName~Integration"
     "EmailVerificationExpirationHours": 24,
     "PasswordResetExpirationHours": 1
   },
+  "Sesiones": {
+    "MaxActivasPorUsuario": 4
+  },
+  "Lockout": {
+    "MaxIntentos": 5,
+    "MinutosBloqueo": 15
+  },
+  "Google": {
+    "ClientId": "<client_id de Google Cloud Console>"
+  },
   "App": {
     "BaseUrl": "https://tu-app.fly.dev"
   },
   "Email": {
+    "Provider": "Resend",
     "ResendApiKey": "re_...",
     "FromAddress": "noreply@tudominio.com",
-    "FromName": "AuthService"
+    "FromName": "AuthService",
+    "Smtp": {
+      "Host": "localhost",
+      "Port": 1025,
+      "EnableSsl": false,
+      "User": "",
+      "Password": ""
+    }
   },
   "Cors": {
     "AllowedOrigins": ["https://tu-frontend.com"]
@@ -265,6 +302,8 @@ dotnet test --filter "FullyQualifiedName~Integration"
   }
 }
 ```
+
+Para desarrollo local con SMTP, usar `"Email:Provider": "Smtp"` apuntando a MailHog o Mailtrap.
 
 En producción (Fly.io), las variables sensibles se configuran como secrets:
 
@@ -305,24 +344,25 @@ docker run -p 8080:8080 \
 
 ### Públicos
 
-| Método | Ruta | Rate Limit |
-|--------|------|------------|
-| POST | `/auth/register` | 5 req/min por IP |
-| POST | `/auth/login` | 10 req/min por IP |
-| GET | `/auth/verify-email/{token}` | — |
-| POST | `/auth/forgot-password` | 3 req/min por IP |
-| POST | `/auth/reset-password` | — |
-| POST | `/auth/refresh-token` | — |
+| Método | Ruta | Descripción | Rate Limit |
+|--------|------|-------------|------------|
+| POST | `/auth/register` | Registro con email + password | 5 req/min por IP |
+| POST | `/auth/login` | Login local | 10 req/min por IP |
+| POST | `/auth/google` | Login con Google ID Token | 10 req/min por IP |
+| GET | `/auth/verify-email/{token}` | Confirmar email | — |
+| POST | `/auth/forgot-password` | Solicitar reset de contraseña | 3 req/min por IP |
+| POST | `/auth/reset-password` | Restablecer contraseña con token | — |
+| POST | `/auth/refresh-token` | Rotar tokens | — |
 
 ### Requieren JWT
 
-| Método | Ruta |
-|--------|------|
-| POST | `/auth/change-password` |
-| POST | `/auth/logout` |
-| POST | `/auth/logout-all` |
-| GET | `/auth/sessions` |
-| POST | `/auth/sessions/revoke/{idSesion}` |
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| POST | `/auth/change-password` | Cambiar contraseña (invalida todas las sesiones) |
+| POST | `/auth/logout` | Cerrar sesión actual |
+| POST | `/auth/logout-all` | Cerrar todas las sesiones |
+| GET | `/auth/sessions` | Listar sesiones activas |
+| POST | `/auth/sessions/revoke/{idSesion}` | Revocar sesión específica |
 
 ---
 

@@ -119,8 +119,16 @@ builder.Services.AddScoped<UsuariosRepository>();
 builder.Services.AddScoped<VerificacionEmailRepository>();
 builder.Services.AddScoped<ResetPasswordRepository>();
 builder.Services.AddScoped<SesionesUsuariosRepository>();
+builder.Services.AddScoped<IntentosLoginRepository>();
 builder.Services.AddScoped<IAutenticacionService, AutenticacionService>();
-builder.Services.AddScoped<IEmailService, EmailService>();
+
+// Seleccionar proveedor de email según configuración.
+// Email:Provider = "Resend" (producción) o "Smtp" (desarrollo local con MailHog/Mailtrap).
+var emailProvider = builder.Configuration["Email:Provider"] ?? "Resend";
+if (emailProvider.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
+    builder.Services.AddScoped<IEmailService, SmtpEmailService>();
+else
+    builder.Services.AddScoped<IEmailService, EmailService>();
 
 // Singleton: una sola instancia compartida para toda la vida de la app.
 builder.Services.AddSingleton<JwtGenerator>();

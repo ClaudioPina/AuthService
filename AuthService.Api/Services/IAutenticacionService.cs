@@ -20,5 +20,6 @@ namespace AuthService.Api.Services
         Task<IResult> LogoutAllAsync(long idUsuario);
         Task<IResult> GetSessionsAsync(long idUsuario);
         Task<IResult> RevokeSessionAsync(long idSesion, long idUsuario);
+        Task<IResult> GoogleLoginAsync(string idToken, string? userAgent, string? ip);
     }
 }
