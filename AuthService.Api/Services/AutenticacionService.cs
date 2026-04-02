@@ -1,6 +1,7 @@
 using AuthService.Api.Dtos.Auth;
 using AuthService.Api.Repositories;
 using AuthService.Api.Utils;
+using Microsoft.Extensions.Caching.Distributed;
 
 namespace AuthService.Api.Services
 {
@@ -24,6 +25,8 @@ namespace AuthService.Api.Services
         private readonly IConfiguration _config;
         private readonly IWebHostEnvironment _env;
         private readonly ILogger<AutenticacionService> _logger;
+        private readonly IDistributedCache _cache;
+        private readonly AuthMetrics _metrics;
 
         public AutenticacionService(
             UsuariosRepository usuariosRepo,
@@ -35,7 +38,9 @@ namespace AuthService.Api.Services
             IEmailService emailService,
             IConfiguration config,
             IWebHostEnvironment env,
-            ILogger<AutenticacionService> logger)
+            ILogger<AutenticacionService> logger,
+            IDistributedCache cache,
+            AuthMetrics metrics)
         {
             _usuariosRepo  = usuariosRepo;
             _sesionesRepo  = sesionesRepo;
@@ -47,6 +52,8 @@ namespace AuthService.Api.Services
             _config        = config;
             _env           = env;
             _logger        = logger;
+            _cache         = cache;
+            _metrics       = metrics;
         }
 
         // ── Registro ─────────────────────────────────────────────────────────────
@@ -56,19 +63,29 @@ namespace AuthService.Api.Services
             if (string.IsNullOrWhiteSpace(request.Email) ||
                 string.IsNullOrWhiteSpace(request.Password))
             {
+                _metrics.RecordRegistration("validation_error");
                 return Results.BadRequest(new { message = "El email y la contraseña son obligatorios." });
             }
 
             if (!EsEmailValido(request.Email))
+            {
+                _metrics.RecordRegistration("validation_error");
                 return Results.BadRequest(new { message = "El formato del email no es válido." });
+            }
 
             var (isValid, error) = PasswordPolicy.Validate(request.Password);
             if (!isValid)
+            {
+                _metrics.RecordRegistration("validation_error");
                 return Results.BadRequest(new { message = error });
+            }
 
             var existe = await _usuariosRepo.EmailExisteAsync(request.Email);
             if (existe)
+            {
+                _metrics.RecordRegistration("conflict");
                 return Results.Conflict(new { message = "Ya existe un usuario registrado con este email." });
+            }
 
             var passwordHash = PasswordHasher.HashPassword(request.Password);
             var idUsuario    = await _usuariosRepo.CrearUsuarioLocalAsync(
@@ -87,6 +104,7 @@ namespace AuthService.Api.Services
             var verificationLink = $"{baseUrl}/auth/verify-email/{token}";
 
             await _emailService.SendVerificationEmailAsync(request.Email, verificationLink);
+            _metrics.RecordRegistration("success");
             _logger.LogInformation("Usuario registrado: {Email}", request.Email);
 
             // En desarrollo, devolvemos el link en la respuesta para poder probarlo sin correo real.
@@ -121,6 +139,7 @@ namespace AuthService.Api.Services
             {
                 var minutosRestantes = (int)Math.Ceiling((bloqueadoHasta.Value - DateTime.UtcNow).TotalMinutes);
                 _logger.LogWarning("Login bloqueado para {Email} hasta {Hasta}", request.Email, bloqueadoHasta.Value);
+                _metrics.RecordLogin("blocked");
                 return Results.BadRequest(new
                 {
                     message = $"Cuenta bloqueada temporalmente por múltiples intentos fallidos. Intenta nuevamente en {minutosRestantes} minutos."
@@ -138,6 +157,7 @@ namespace AuthService.Api.Services
                     request.Email, ip ?? "desconocida",
                     _config.GetValue<int>("Lockout:MaxIntentos", 5),
                     _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
+                _metrics.RecordLogin("invalid_credentials");
                 return Results.BadRequest(new { message = credencialesInvalidas });
             }
 
@@ -147,6 +167,7 @@ namespace AuthService.Api.Services
                     request.Email, ip ?? "desconocida",
                     _config.GetValue<int>("Lockout:MaxIntentos", 5),
                     _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
+                _metrics.RecordLogin("invalid_credentials");
                 return Results.BadRequest(new { message = credencialesInvalidas });
             }
 
@@ -154,7 +175,10 @@ namespace AuthService.Api.Services
             await _intentosRepo.LimpiarIntentosAsync(request.Email);
 
             if (usuario.EmailVerificado == 0)
+            {
+                _metrics.RecordLogin("email_not_verified");
                 return Results.BadRequest(new { message = "Debes verificar tu email antes de iniciar sesión." });
+            }
 
             var refreshToken    = TokenGenerator.GenerateToken(64);
             var refreshExpiraEn = DateTime.UtcNow.AddDays(
@@ -175,6 +199,7 @@ namespace AuthService.Api.Services
             var maxSesiones = _config.GetValue<int>("Sesiones:MaxActivasPorUsuario", 4);
             await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, maxSesiones);
 
+            _metrics.RecordLogin("success");
             _logger.LogInformation("Login exitoso para usuario {IdUsuario}", usuario.IdUsuario);
 
             // Notificar al usuario sobre el nuevo login para que detecte accesos no autorizados.
@@ -318,28 +343,44 @@ namespace AuthService.Api.Services
                 var sesionRevocada = await _sesionesRepo.ObtenerSesionPorHashAsync(hash);
                 if (sesionRevocada != null)
                 {
+                    // Invalidar cache de todas las sesiones activas antes de revocarlas en BD.
+                    var todasSesiones = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(sesionRevocada.IdUsuario);
+                    foreach (var s in todasSesiones)
+                        await RemoveSesionCacheAsync(s.IdSesion);
+
                     await _sesionesRepo.InvalidarTodasPorUsuarioAsync(sesionRevocada.IdUsuario);
+                    _metrics.RecordTokenRefresh("reuse_detected");
                     _logger.LogWarning(
                         "Refresh token reutilizado para usuario {IdUsuario}. Todas las sesiones revocadas.",
                         sesionRevocada.IdUsuario);
+                }
+                else
+                {
+                    _metrics.RecordTokenRefresh("invalid");
                 }
                 return Results.BadRequest(new { message = "El token ya no es válido." });
             }
 
             if (sesion.ExpiraEn < DateTime.UtcNow)
             {
+                await RemoveSesionCacheAsync(sesion.IdSesion);
                 await _sesionesRepo.InvalidarSesionPorHashAsync(hash);
+                _metrics.RecordTokenRefresh("expired");
                 return Results.BadRequest(new { message = "El refresh token ha expirado." });
             }
 
             if (sesion.Estado != 1)
+            {
+                _metrics.RecordTokenRefresh("invalid");
                 return Results.BadRequest(new { message = "Sesión inválida." });
+            }
 
             var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(sesion.IdUsuario);
             if (usuario == null || usuario.Estado == 0)
                 return Results.BadRequest(new { message = "El usuario asociado ya no está disponible." });
 
             // Rotación segura: invalidar sesión actual antes de crear una nueva.
+            await RemoveSesionCacheAsync(sesion.IdSesion);
             await _sesionesRepo.InvalidarSesionPorHashAsync(hash);
 
             var nuevoRefreshToken = TokenGenerator.GenerateToken(64);
@@ -357,6 +398,7 @@ namespace AuthService.Api.Services
 
             var nuevoAccessToken = _jwtGenerator.GenerateJwt(usuario, nuevoIdSesion);
 
+            _metrics.RecordTokenRefresh("success");
             _logger.LogInformation("Refresh token rotado para usuario {IdUsuario}", usuario.IdUsuario);
 
             return Results.Ok(new
@@ -390,6 +432,10 @@ namespace AuthService.Api.Services
             await _usuariosRepo.ActualizarPasswordAsync(usuario.IdUsuario, hashNuevo);
 
             // Invalida todas las sesiones por seguridad — obliga a hacer login de nuevo.
+            // Se obtienen primero los IDs para invalidar el cache antes que la BD.
+            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(usuario.IdUsuario);
+            foreach (var s in sesionesActivas)
+                await RemoveSesionCacheAsync(s.IdSesion);
             await _sesionesRepo.InvalidarTodasPorUsuarioAsync(usuario.IdUsuario);
 
             // Notificar al usuario sobre el cambio de contraseña.
@@ -406,6 +452,7 @@ namespace AuthService.Api.Services
 
         public async Task<IResult> LogoutAsync(long idSesion)
         {
+            await RemoveSesionCacheAsync(idSesion);
             var exito = await _sesionesRepo.InvalidarSesionPorIdAsync(idSesion);
 
             return Results.Ok(new
@@ -420,6 +467,10 @@ namespace AuthService.Api.Services
 
         public async Task<IResult> LogoutAllAsync(long idUsuario)
         {
+            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(idUsuario);
+            foreach (var s in sesionesActivas)
+                await RemoveSesionCacheAsync(s.IdSesion);
+
             var cantidad = await _sesionesRepo.InvalidarTodasPorUsuarioAsync(idUsuario);
 
             _logger.LogInformation("Logout all: {Cantidad} sesiones cerradas para usuario {IdUsuario}", cantidad, idUsuario);
@@ -457,6 +508,7 @@ namespace AuthService.Api.Services
             if (sesion == null || sesion.IdUsuario != idUsuario)
                 return Results.BadRequest(new { message = "No puedes revocar esta sesión." });
 
+            await RemoveSesionCacheAsync(idSesion);
             await _sesionesRepo.InvalidarSesionPorIdAsync(idSesion);
 
             _logger.LogInformation("Sesión {IdSesion} revocada por usuario {IdUsuario}", idSesion, idUsuario);
@@ -557,6 +609,19 @@ namespace AuthService.Api.Services
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Elimina la entrada de cache de una sesión de forma segura.
+        /// Los fallos de cache no interrumpen el flujo principal — la BD es la fuente de verdad.
+        /// </summary>
+        private async Task RemoveSesionCacheAsync(long idSesion)
+        {
+            try { await _cache.RemoveAsync($"sess:{idSesion}"); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Error al invalidar cache para sesión {IdSesion}.", idSesion);
+            }
+        }
 
         /// <summary>
         /// Valida el formato del email usando la clase MailAddress de .NET,

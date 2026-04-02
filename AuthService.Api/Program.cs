@@ -10,6 +10,7 @@ using AuthService.Api.Utils;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
+using OpenTelemetry.Metrics;
 using Resend;
 using Serilog;
 
@@ -109,6 +110,32 @@ builder.Services.AddRateLimiter(options =>
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
 
+// ── OpenTelemetry Metrics ─────────────────────────────────────────────────────
+// Instrumenta métricas de ASP.NET Core y las del Meter "AuthService" (AuthMetrics.cs).
+// Las expone en /metrics en formato Prometheus para ser consumidas por Grafana u otras
+// herramientas de monitoreo.
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation(); // request count, duration, errors por ruta
+        metrics.AddMeter("AuthService");        // contadores de negocio (logins, registros, etc.)
+        metrics.AddPrometheusExporter();
+    });
+
+// Singleton porque IMeterFactory (que usa AuthMetrics internamente) es thread-safe.
+builder.Services.AddSingleton<AuthMetrics>();
+
+// ── Redis / Distributed Cache ─────────────────────────────────────────────────
+// Usado por ValidarSesionMiddleware para cachear sesiones activas (TTL 5 min)
+// y reducir queries a BD por request.
+// Si Redis:ConnectionString está vacío, se usa MemoryCache como fallback
+// (funciona correctamente en despliegues de instancia única como Fly.io).
+var redisConn = builder.Configuration["Redis:ConnectionString"];
+if (!string.IsNullOrWhiteSpace(redisConn))
+    builder.Services.AddStackExchangeRedisCache(o => o.Configuration = redisConn);
+else
+    builder.Services.AddDistributedMemoryCache();
+
 // ── Health Checks ──────────────────────────────────────────────────────────────
 builder.Services.AddHealthChecks();
 
@@ -167,8 +194,9 @@ app.UseAuthorization();
 app.UseMiddleware<ValidarSesionMiddleware>();
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────
-app.MapHealthChecks("/health"); // GET /health → {"status":"Healthy"}
-app.MapAuthEndpoints();        // definidos en Endpoints/AuthEndpoints.cs
+app.MapHealthChecks("/health");              // GET /health → {"status":"Healthy"}
+app.MapPrometheusScrapingEndpoint();         // GET /metrics → formato Prometheus
+app.MapAuthEndpoints();                      // definidos en Endpoints/AuthEndpoints.cs
 
 // En producción (Docker/Fly.io) escucha en 0.0.0.0:8080
 if (!app.Environment.IsDevelopment())

@@ -123,7 +123,9 @@ namespace AuthService.Api.Repositories
         public async Task VerificarEmailAsync(long idUsuario)
         {
             const string sql = @"
-                UPDATE USUARIOS SET email_verificado = 1
+                UPDATE USUARIOS
+                SET email_verificado = 1,
+                    actualizacion     = NOW()
                 WHERE id_usuario = @p_id";
 
             using var conn = await _db.GetOpenConnectionAsync();
@@ -198,7 +200,8 @@ namespace AuthService.Api.Repositories
                 SET google_sub       = @p_sub,
                     foto_url         = COALESCE(@p_foto, foto_url),
                     proveedor_login  = 'MIXTO',
-                    email_verificado = 1
+                    email_verificado = 1,
+                    actualizacion    = NOW()
                 WHERE id_usuario = @p_id";
 
             using var conn = await _db.GetOpenConnectionAsync();
@@ -215,7 +218,9 @@ namespace AuthService.Api.Repositories
         public async Task ActualizarPasswordAsync(long idUsuario, string newPasswordHash)
         {
             const string sql = @"
-                UPDATE USUARIOS SET password_hash = @p_pass
+                UPDATE USUARIOS
+                SET password_hash = @p_pass,
+                    actualizacion = NOW()
                 WHERE id_usuario = @p_id";
 
             using var conn = await _db.GetOpenConnectionAsync();

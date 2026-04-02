@@ -15,6 +15,7 @@ CREATE TABLE USUARIOS (
     google_sub       VARCHAR(60)   UNIQUE,
     email_verificado SMALLINT      DEFAULT 0 NOT NULL CHECK (email_verificado IN (0, 1)),
     creacion         TIMESTAMPTZ   DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    actualizacion    TIMESTAMPTZ,
     estado           SMALLINT      DEFAULT 1 NOT NULL CHECK (estado IN (0, 1))
 );
 
