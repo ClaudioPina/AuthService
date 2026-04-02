@@ -1,3 +1,4 @@
+using AuthService.Api.Data;
 using AuthService.Api.Dtos.Auth;
 using AuthService.Api.Repositories;
 using AuthService.Api.Utils;
@@ -27,6 +28,8 @@ namespace AuthService.Api.Services
         private readonly ILogger<AutenticacionService> _logger;
         private readonly IDistributedCache _cache;
         private readonly AuthMetrics _metrics;
+        private readonly AppDbContext _db;
+        private readonly AuditoriaRepository _auditoriaRepo;
 
         public AutenticacionService(
             UsuariosRepository usuariosRepo,
@@ -40,7 +43,9 @@ namespace AuthService.Api.Services
             IWebHostEnvironment env,
             ILogger<AutenticacionService> logger,
             IDistributedCache cache,
-            AuthMetrics metrics)
+            AuthMetrics metrics,
+            AppDbContext db,
+            AuditoriaRepository auditoriaRepo)
         {
             _usuariosRepo  = usuariosRepo;
             _sesionesRepo  = sesionesRepo;
@@ -54,6 +59,8 @@ namespace AuthService.Api.Services
             _logger        = logger;
             _cache         = cache;
             _metrics       = metrics;
+            _db            = db;
+            _auditoriaRepo = auditoriaRepo;
         }
 
         // ── Registro ─────────────────────────────────────────────────────────────
@@ -80,7 +87,11 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = error });
             }
 
-            var existe = await _usuariosRepo.EmailExisteAsync(request.Email);
+            // Normalizar email: trim + lowercase para consistencia en BD.
+            // Evita que 'User@Mail.COM' y 'user@mail.com' coexistan como cuentas distintas.
+            var email = request.Email.Trim().ToLowerInvariant();
+
+            var existe = await _usuariosRepo.EmailExisteAsync(email);
             if (existe)
             {
                 _metrics.RecordRegistration("conflict");
@@ -89,23 +100,24 @@ namespace AuthService.Api.Services
 
             var passwordHash = PasswordHasher.HashPassword(request.Password);
             var idUsuario    = await _usuariosRepo.CrearUsuarioLocalAsync(
-                request.Email,
+                email,
                 request.Nombre,
                 passwordHash
             );
 
-            var token    = TokenGenerator.GenerateToken(32);
-            var expiraEn = DateTime.UtcNow.AddHours(
+            var token      = TokenGenerator.GenerateToken(32);
+            var tokenHash  = TokenGenerator.HashToken(token);   // se almacena el hash, no el token plano
+            var expiraEn   = DateTime.UtcNow.AddHours(
                 _config.GetValue<int>("Tokens:EmailVerificationExpirationHours", 24));
 
-            await _verifRepo.CrearTokenVerificacionAsync(idUsuario, token, expiraEn);
+            await _verifRepo.CrearTokenVerificacionAsync(idUsuario, tokenHash, expiraEn);
 
             var baseUrl          = _config["App:BaseUrl"];
-            var verificationLink = $"{baseUrl}/auth/verify-email/{token}";
+            var verificationLink = $"{baseUrl}/auth/verify-email/{token}"; // link lleva el token plano
 
-            await _emailService.SendVerificationEmailAsync(request.Email, verificationLink);
+            await _emailService.SendVerificationEmailAsync(email, verificationLink);
             _metrics.RecordRegistration("success");
-            _logger.LogInformation("Usuario registrado: {Email}", request.Email);
+            _logger.LogInformation("Usuario registrado: {Email}", email);
 
             // En desarrollo, devolvemos el link en la respuesta para poder probarlo sin correo real.
             if (_env.IsDevelopment())
@@ -133,12 +145,14 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "El email y la contraseña son obligatorios." });
             }
 
+            var email = request.Email.Trim().ToLowerInvariant();
+
             // Verificar si la cuenta está bloqueada por intentos fallidos.
-            var bloqueadoHasta = await _intentosRepo.ObtenerBloqueoActivoAsync(request.Email);
+            var bloqueadoHasta = await _intentosRepo.ObtenerBloqueoActivoAsync(email);
             if (bloqueadoHasta.HasValue)
             {
                 var minutosRestantes = (int)Math.Ceiling((bloqueadoHasta.Value - DateTime.UtcNow).TotalMinutes);
-                _logger.LogWarning("Login bloqueado para {Email} hasta {Hasta}", request.Email, bloqueadoHasta.Value);
+                _logger.LogWarning("Login bloqueado para {Email} hasta {Hasta}", email, bloqueadoHasta.Value);
                 _metrics.RecordLogin("blocked");
                 return Results.BadRequest(new
                 {
@@ -146,7 +160,7 @@ namespace AuthService.Api.Services
                 });
             }
 
-            var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(request.Email);
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(email);
 
             // Mensaje genérico para no filtrar si el email existe o no (user enumeration).
             const string credencialesInvalidas = "No es posible iniciar sesión con las credenciales proporcionadas.";
@@ -154,17 +168,25 @@ namespace AuthService.Api.Services
             if (usuario == null)
             {
                 await _intentosRepo.RegistrarIntentoFallidoAsync(
-                    request.Email, ip ?? "desconocida",
+                    email, ip ?? "desconocida",
                     _config.GetValue<int>("Lockout:MaxIntentos", 5),
                     _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
                 _metrics.RecordLogin("invalid_credentials");
                 return Results.BadRequest(new { message = credencialesInvalidas });
             }
 
+            // Cuenta creada exclusivamente con Google — no tiene password local.
+            // Retornar un error específico en lugar de lanzar una excepción al comparar con null.
+            if (usuario.PasswordHash == null)
+            {
+                _metrics.RecordLogin("invalid_credentials");
+                return Results.BadRequest(new { message = "Esta cuenta está vinculada a Google. Usa el botón 'Iniciar sesión con Google'." });
+            }
+
             if (!PasswordHasher.VerifyPassword(request.Password, usuario.PasswordHash))
             {
                 await _intentosRepo.RegistrarIntentoFallidoAsync(
-                    request.Email, ip ?? "desconocida",
+                    email, ip ?? "desconocida",
                     _config.GetValue<int>("Lockout:MaxIntentos", 5),
                     _config.GetValue<int>("Lockout:MinutosBloqueo", 15));
                 _metrics.RecordLogin("invalid_credentials");
@@ -172,7 +194,7 @@ namespace AuthService.Api.Services
             }
 
             // Login exitoso — limpiar registro de intentos fallidos.
-            await _intentosRepo.LimpiarIntentosAsync(request.Email);
+            await _intentosRepo.LimpiarIntentosAsync(email);
 
             if (usuario.EmailVerificado == 0)
             {
@@ -196,11 +218,19 @@ namespace AuthService.Api.Services
             var accessToken = _jwtGenerator.GenerateJwt(usuario, idSesion);
 
             // Limitar sesiones activas por usuario (configurable, default 4).
+            // Los IDs retornados se usan para limpiar el cache antes de que expire el TTL.
             var maxSesiones = _config.GetValue<int>("Sesiones:MaxActivasPorUsuario", 4);
-            await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, maxSesiones);
+            var sesionesDesactivadas = await _sesionesRepo.LimitarSesionesActivasAsync(usuario.IdUsuario, maxSesiones);
+            foreach (var id in sesionesDesactivadas)
+                await RemoveSesionCacheAsync(id);
 
             _metrics.RecordLogin("success");
             _logger.LogInformation("Login exitoso para usuario {IdUsuario}", usuario.IdUsuario);
+
+            // Registrar en auditoría (fire-and-forget: un fallo de auditoría no bloquea el login).
+            _ = _auditoriaRepo.RegistrarAsync(usuario.IdUsuario, "LOGIN", ip, userAgent)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de login."),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
             // Notificar al usuario sobre el nuevo login para que detecte accesos no autorizados.
             // Se dispara sin await para no bloquear la respuesta — si falla, solo se loguea.
@@ -234,7 +264,9 @@ namespace AuthService.Api.Services
 
         public async Task<IResult> VerifyEmailAsync(string token)
         {
-            var data = await _verifRepo.ObtenerTokenAsync(token);
+            // El token viaja en texto plano en la URL; se hashea para buscar en BD.
+            var tokenHash = TokenGenerator.HashToken(token);
+            var data = await _verifRepo.ObtenerTokenAsync(tokenHash);
 
             if (data is null)
                 return Results.BadRequest(new { message = "Token inválido o ya utilizado." });
@@ -245,7 +277,7 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "El token ha expirado. Solicita uno nuevo." });
 
             await _usuariosRepo.VerificarEmailAsync(idUsuario);
-            await _verifRepo.InvalidarTokenAsync(token);
+            await _verifRepo.InvalidarTokenAsync(tokenHash);
 
             _logger.LogInformation("Email verificado para usuario {IdUsuario}", idUsuario);
 
@@ -262,21 +294,24 @@ namespace AuthService.Api.Services
             if (!EsEmailValido(request.Email))
                 return Results.BadRequest(new { message = "El formato del email no es válido." });
 
+            var email = request.Email.Trim().ToLowerInvariant();
+
             // Respuesta siempre igual por seguridad (no revelar si el email existe).
             const string respuestaGenerica = "Si el correo está registrado, recibirás instrucciones para recuperar tu contraseña.";
 
-            var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(request.Email);
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(email);
             if (usuario == null)
                 return Results.Ok(new { message = respuestaGenerica });
 
-            var token    = TokenGenerator.GenerateToken(32);
-            var expiraEn = DateTime.UtcNow.AddHours(
+            var token      = TokenGenerator.GenerateToken(32);
+            var tokenHash  = TokenGenerator.HashToken(token);   // se almacena el hash, no el token plano
+            var expiraEn   = DateTime.UtcNow.AddHours(
                 _config.GetValue<int>("Tokens:PasswordResetExpirationHours", 1));
 
-            await _resetRepo.CrearTokenResetAsync(usuario.IdUsuario, token, expiraEn);
+            await _resetRepo.CrearTokenResetAsync(usuario.IdUsuario, tokenHash, expiraEn);
 
             var baseUrl   = _config["App:BaseUrl"];
-            var resetLink = $"{baseUrl}/auth/reset-password/{token}";
+            var resetLink = $"{baseUrl}/auth/reset-password/{token}"; // link lleva el token plano
 
             await _emailService.SendPasswordResetEmailAsync(request.Email, resetLink);
             _logger.LogInformation("Token de reset enviado para usuario {IdUsuario}", usuario.IdUsuario);
@@ -307,7 +342,9 @@ namespace AuthService.Api.Services
             if (!isValid)
                 return Results.BadRequest(new { message = error });
 
-            var tokenInfo = await _resetRepo.ObtenerTokenValidoAsync(request.Token);
+            // El token viaja en texto plano en la URL; se hashea para buscar en BD.
+            var tokenHash = TokenGenerator.HashToken(request.Token);
+            var tokenInfo = await _resetRepo.ObtenerTokenValidoAsync(tokenHash);
 
             if (tokenInfo == null)
                 return Results.BadRequest(new { message = "El token es inválido o ya no está disponible." });
@@ -316,12 +353,50 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "El token de recuperación ha expirado." });
 
             var newHash = PasswordHasher.HashPassword(request.NewPassword);
-            await _usuariosRepo.ActualizarPasswordAsync(tokenInfo.IdUsuario, newHash);
-            await _resetRepo.MarcarTokenComoUsadoAsync(tokenInfo.IdReset);
+
+            // Actualizar password y marcar token como usado en una sola transacción.
+            // Si falla marcar el token, el password no queda actualizado → evita token reutilizable.
+            var (txConn, tx) = await _db.BeginTransactionAsync();
+            try
+            {
+                await _usuariosRepo.ActualizarPasswordAsync(tokenInfo.IdUsuario, newHash, txConn, tx);
+                await _resetRepo.MarcarTokenComoUsadoAsync(tokenInfo.IdReset, txConn, tx);
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+            finally
+            {
+                await tx.DisposeAsync();
+                await txConn.DisposeAsync();
+            }
+
+            // Revocar todas las sesiones activas: quien reseteó la contraseña puede haber
+            // sido comprometido, así que forzamos re-login desde cero.
+            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(tokenInfo.IdUsuario);
+            foreach (var s in sesionesActivas)
+                await RemoveSesionCacheAsync(s.IdSesion);
+            await _sesionesRepo.InvalidarTodasPorUsuarioAsync(tokenInfo.IdUsuario);
+
+            // Notificar al usuario — fire-and-forget, no bloquea la respuesta.
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(tokenInfo.IdUsuario);
+            if (usuario != null)
+            {
+                _ = _emailService.SendPasswordChangedNotificationAsync(usuario.Email)
+                    .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al enviar notificación post-reset."),
+                        TaskContinuationOptions.OnlyOnFaulted);
+            }
 
             _logger.LogInformation("Contraseña reseteada para usuario {IdUsuario}", tokenInfo.IdUsuario);
 
-            return Results.Ok(new { message = "Tu contraseña ha sido actualizada correctamente." });
+            _ = _auditoriaRepo.RegistrarAsync(tokenInfo.IdUsuario, "RESET_CONTRASENA", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de reset."),
+                    TaskContinuationOptions.OnlyOnFaulted);
+
+            return Results.Ok(new { message = "Tu contraseña ha sido actualizada. Por seguridad, vuelve a iniciar sesión." });
         }
 
         // ── Refresh token ─────────────────────────────────────────────────────────
@@ -379,22 +454,34 @@ namespace AuthService.Api.Services
             if (usuario == null || usuario.Estado == 0)
                 return Results.BadRequest(new { message = "El usuario asociado ya no está disponible." });
 
-            // Rotación segura: invalidar sesión actual antes de crear una nueva.
+            // Rotación atómica: invalidar sesión vieja y crear la nueva en la misma transacción.
+            // Si falla la creación, el rollback restaura la sesión anterior → el usuario no queda bloqueado.
             await RemoveSesionCacheAsync(sesion.IdSesion);
-            await _sesionesRepo.InvalidarSesionPorHashAsync(hash);
 
             var nuevoRefreshToken = TokenGenerator.GenerateToken(64);
             var expiraEn          = DateTime.UtcNow.AddDays(
                 _config.GetValue<int>("Tokens:RefreshTokenExpirationDays", 7));
 
-            // El repositorio hashea internamente — se pasa en texto plano.
-            var nuevoIdSesion = await _sesionesRepo.CrearSesionAsync(
-                usuario.IdUsuario,
-                nuevoRefreshToken,
-                expiraEn,
-                userAgent,
-                ip
-            );
+            long nuevoIdSesion;
+            var (txConn, tx) = await _db.BeginTransactionAsync();
+            try
+            {
+                await _sesionesRepo.InvalidarSesionPorHashAsync(hash, txConn, tx);
+                // El repositorio hashea internamente — se pasa en texto plano.
+                nuevoIdSesion = await _sesionesRepo.CrearSesionAsync(
+                    usuario.IdUsuario, nuevoRefreshToken, expiraEn, userAgent, ip, txConn, tx);
+                await tx.CommitAsync();
+            }
+            catch
+            {
+                await tx.RollbackAsync();
+                throw;
+            }
+            finally
+            {
+                await tx.DisposeAsync();
+                await txConn.DisposeAsync();
+            }
 
             var nuevoAccessToken = _jwtGenerator.GenerateJwt(usuario, nuevoIdSesion);
 
@@ -403,10 +490,13 @@ namespace AuthService.Api.Services
 
             return Results.Ok(new
             {
-                access_token  = nuevoAccessToken,
-                refresh_token = nuevoRefreshToken,
-                expires_in    = _jwtGenerator.ExpirationMinutes * 60,
-                token_type    = "Bearer"
+                tokens = new
+                {
+                    accessToken                 = nuevoAccessToken,
+                    accessTokenExpiresInMinutes = _jwtGenerator.ExpirationMinutes,
+                    refreshToken                = nuevoRefreshToken,
+                    refreshTokenExpiresAt       = expiraEn
+                }
             });
         }
 
@@ -414,9 +504,17 @@ namespace AuthService.Api.Services
 
         public async Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, long idUsuario)
         {
+            if (string.IsNullOrWhiteSpace(request.PasswordActual) ||
+                string.IsNullOrWhiteSpace(request.PasswordNueva))
+                return Results.BadRequest(new { message = "La contraseña actual y la nueva son obligatorias." });
+
             var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(idUsuario);
             if (usuario == null)
                 return Results.BadRequest(new { message = "El usuario no está disponible." });
+
+            // Cuentas Google-only no tienen password local — no pueden usar este endpoint.
+            if (usuario.PasswordHash == null)
+                return Results.BadRequest(new { message = "Esta cuenta no tiene contraseña local. Usa Google para autenticarte." });
 
             if (!PasswordHasher.VerifyPassword(request.PasswordActual, usuario.PasswordHash))
                 return Results.BadRequest(new { message = "La contraseña actual es incorrecta." });
@@ -444,6 +542,10 @@ namespace AuthService.Api.Services
                     TaskContinuationOptions.OnlyOnFaulted);
 
             _logger.LogInformation("Contraseña cambiada para usuario {IdUsuario}", idUsuario);
+
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "CAMBIO_CONTRASENA", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de cambio de contraseña."),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
             return Results.Ok(new { message = "Tu contraseña ha sido actualizada. Por seguridad, vuelve a iniciar sesión." });
         }
@@ -474,6 +576,10 @@ namespace AuthService.Api.Services
             var cantidad = await _sesionesRepo.InvalidarTodasPorUsuarioAsync(idUsuario);
 
             _logger.LogInformation("Logout all: {Cantidad} sesiones cerradas para usuario {IdUsuario}", cantidad, idUsuario);
+
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "LOGOUT_ALL", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de logout all."),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
             return Results.Ok(new { message = $"Todas las sesiones han sido cerradas ({cantidad})." });
         }
@@ -512,6 +618,10 @@ namespace AuthService.Api.Services
             await _sesionesRepo.InvalidarSesionPorIdAsync(idSesion);
 
             _logger.LogInformation("Sesión {IdSesion} revocada por usuario {IdUsuario}", idSesion, idUsuario);
+
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "REVOCACION_SESION", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de revocación."),
+                    TaskContinuationOptions.OnlyOnFaulted);
 
             return Results.Ok(new { message = "Sesión revocada correctamente." });
         }
@@ -589,8 +699,10 @@ namespace AuthService.Api.Services
                 usuario.IdUsuario, refreshToken, refreshExpiraEn, userAgent, ip);
 
             var accessToken = _jwtGenerator.GenerateJwt(usuario, idSesion);
-            await _sesionesRepo.LimitarSesionesActivasAsync(
+            var sesionesDesactivadasGoogle = await _sesionesRepo.LimitarSesionesActivasAsync(
                 usuario.IdUsuario, _config.GetValue<int>("Sesiones:MaxActivasPorUsuario", 4));
+            foreach (var id in sesionesDesactivadasGoogle)
+                await RemoveSesionCacheAsync(id);
 
             _logger.LogInformation("Login Google exitoso para usuario {IdUsuario}", usuario.IdUsuario);
 

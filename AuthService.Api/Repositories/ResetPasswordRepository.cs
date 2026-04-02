@@ -82,6 +82,21 @@ namespace AuthService.Api.Repositories
         }
 
 
+        /// <summary>
+        /// Overload transaccional de MarcarTokenComoUsadoAsync.
+        /// Usa la conexión y transacción compartidas provistas por el caller.
+        /// </summary>
+        public async Task<bool> MarcarTokenComoUsadoAsync(long idReset, NpgsqlConnection conn, NpgsqlTransaction tx)
+        {
+            const string sql = @"
+                UPDATE RESET_PASSWORD SET estado = 0
+                WHERE id_reset = @p_id AND estado = 1";
+
+            using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("p_id", idReset);
+            return await cmd.ExecuteNonQueryAsync() > 0;
+        }
+
         // Desactivar tokens vencidos
         public async Task<int> InvalidarTokensExpiradosAsync()
         {

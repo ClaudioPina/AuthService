@@ -45,29 +45,27 @@ namespace AuthService.Api.Repositories
 
         /// <summary>
         /// Registra un intento fallido de login.
-        /// Si ya existe un registro para este email, incrementa el contador.
-        /// Si se supera el máximo de intentos, establece el bloqueo temporal.
-        /// Usa UPSERT (INSERT ... ON CONFLICT) para manejar concurrencia.
+        /// Usa un único UPSERT atómico sobre el índice único LOWER(email).
+        /// Si ya existe fila para ese email, incrementa el contador; si no, inserta.
+        /// El bloqueo se activa cuando el nuevo contador alcanza el máximo.
+        /// El email se normaliza a minúsculas en el INSERT para consistencia.
         /// </summary>
         public async Task RegistrarIntentoFallidoAsync(string email, string ip, int maxIntentos, int minutoBloqueo)
         {
-            // UPSERT: si ya existe registro para este email, actualiza; si no, inserta.
-            // El bloqueo se activa cuando el nuevo contador supera el máximo.
+            // ON CONFLICT (LOWER(email)) requiere el índice único funcional definido en script_DB.sql.
+            // INTENTOS_LOGIN.columna = valor anterior, EXCLUDED.columna = valor que se intentó insertar.
             const string sql = @"
                 INSERT INTO INTENTOS_LOGIN (email, ip_origen, intentos, ultimo_intento, bloqueado_hasta)
-                VALUES (@p_email, @p_ip, 1, CURRENT_TIMESTAMP, NULL)
-                ON CONFLICT DO NOTHING;
-
-                UPDATE INTENTOS_LOGIN
-                SET intentos       = intentos + 1,
-                    ultimo_intento  = CURRENT_TIMESTAMP,
-                    ip_origen       = @p_ip,
-                    bloqueado_hasta = CASE
-                        WHEN intentos + 1 >= @p_max
+                VALUES (LOWER(@p_email), @p_ip, 1, CURRENT_TIMESTAMP, NULL)
+                ON CONFLICT (LOWER(email)) DO UPDATE
+                SET intentos        = INTENTOS_LOGIN.intentos + 1,
+                    ultimo_intento   = CURRENT_TIMESTAMP,
+                    ip_origen        = EXCLUDED.ip_origen,
+                    bloqueado_hasta  = CASE
+                        WHEN INTENTOS_LOGIN.intentos + 1 >= @p_max
                         THEN CURRENT_TIMESTAMP + (@p_minutos || ' minutes')::INTERVAL
-                        ELSE bloqueado_hasta
-                    END
-                WHERE LOWER(email) = LOWER(@p_email)";
+                        ELSE INTENTOS_LOGIN.bloqueado_hasta
+                    END";
 
             using var conn = await _db.GetOpenConnectionAsync();
             using var cmd = new NpgsqlCommand(sql, conn);

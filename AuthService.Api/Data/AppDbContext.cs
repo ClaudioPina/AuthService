@@ -54,5 +54,18 @@ namespace AuthService.Api.Data
                 return conn;
             });
         }
+
+        /// <summary>
+        /// Abre una conexión e inicia una transacción explícita.
+        /// Usar cuando múltiples operaciones de repositorio deben ser atómicas.
+        /// El caller es responsable de hacer CommitAsync(), RollbackAsync() y Dispose
+        /// tanto de la conexión como de la transacción.
+        /// </summary>
+        public async Task<(NpgsqlConnection Connection, NpgsqlTransaction Transaction)> BeginTransactionAsync()
+        {
+            var conn = await GetOpenConnectionAsync();
+            var tx   = await conn.BeginTransactionAsync();
+            return (conn, tx);
+        }
     }
 }

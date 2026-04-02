@@ -83,7 +83,7 @@ namespace AuthService.Api.Repositories
                 IdUsuario       = reader.GetInt64(0),
                 Email           = reader.GetString(1),
                 Nombre          = reader.IsDBNull(2) ? null : reader.GetString(2),
-                PasswordHash    = reader.GetString(3),
+                PasswordHash    = reader.IsDBNull(3) ? null : reader.GetString(3),
                 EmailVerificado = reader.GetInt32(4),
                 Estado          = reader.GetInt32(5)
             };
@@ -111,7 +111,7 @@ namespace AuthService.Api.Repositories
                 IdUsuario       = reader.GetInt64(0),
                 Email           = reader.GetString(1),
                 Nombre          = reader.IsDBNull(2) ? null : reader.GetString(2),
-                PasswordHash    = reader.GetString(3),
+                PasswordHash    = reader.IsDBNull(3) ? null : reader.GetString(3),
                 EmailVerificado = reader.GetInt32(4),
                 Estado          = reader.GetInt32(5)
             };
@@ -225,6 +225,24 @@ namespace AuthService.Api.Repositories
 
             using var conn = await _db.GetOpenConnectionAsync();
             using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("p_pass", newPasswordHash);
+            cmd.Parameters.AddWithValue("p_id", idUsuario);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
+        /// <summary>
+        /// Overload transaccional de ActualizarPasswordAsync.
+        /// Usa la conexión y transacción compartidas provistas por el caller.
+        /// </summary>
+        public async Task ActualizarPasswordAsync(long idUsuario, string newPasswordHash, NpgsqlConnection conn, NpgsqlTransaction tx)
+        {
+            const string sql = @"
+                UPDATE USUARIOS
+                SET password_hash = @p_pass,
+                    actualizacion = NOW()
+                WHERE id_usuario = @p_id";
+
+            using var cmd = new NpgsqlCommand(sql, conn, tx);
             cmd.Parameters.AddWithValue("p_pass", newPasswordHash);
             cmd.Parameters.AddWithValue("p_id", idUsuario);
             await cmd.ExecuteNonQueryAsync();

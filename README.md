@@ -43,6 +43,10 @@ Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros m
 - Bloqueo temporal de cuenta tras intentos fallidos de login
 - Notificaciones por email en nuevos logins y cambios de contraseña
 - Limpieza automática de tokens y sesiones expirados
+- Cache de sesiones activas (Redis / MemoryCache) para reducir queries a BD
+- Métricas de negocio expuestas en `/metrics` (formato Prometheus)
+- Health checks de dependencias expuestos en `GET /health` (PostgreSQL + Redis)
+- Audit log de eventos de seguridad en tabla `AUDITORIA`
 
 **Lo que AuthService NO hace:** no maneja lógica de negocio, no almacena datos de dominio, no gestiona permisos específicos de la aplicación.
 
@@ -139,6 +143,12 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 - **Rate limiting por IP**: límites separados para register, login, google y forgot-password
 - **Google OAuth**: validación de ID Tokens server-side vía `Google.Apis.Auth` — no se confía en datos del cliente
 - **CORS configurable**: permisivo en Development, restringido en producción
+- **Cache de sesiones**: Redis (TTL 5 min) reduce queries a BD en cada request autenticado; fallback automático a MemoryCache si Redis no está configurado
+- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy` en todas las respuestas
+- **Correlation ID**: header `X-Correlation-ID` propagado en cada respuesta para trazabilidad entre servicios
+- **Email case-insensitive**: emails normalizados a lowercase; unicidad garantizada con índice parcial `LOWER(email)` en PostgreSQL
+- **Logout forzado al resetear contraseña**: `ResetPasswordAsync` invalida todas las sesiones activas además de cambiar la contraseña
+- **Audit log**: eventos de seguridad (login, cambio/reset de contraseña, logout-all, revocación de sesión) registrados en tabla `AUDITORIA` de forma asíncrona fire-and-forget
 - **Docker non-root**: el contenedor corre con usuario `appuser` sin privilegios
 
 ---
@@ -155,6 +165,8 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 | Resend SDK | Envío de emails transaccionales (producción) |
 | System.Net.Mail | Envío de emails SMTP (desarrollo local) |
 | Google.Apis.Auth | Validación de ID Tokens de Google OAuth |
+| OpenTelemetry + Prometheus | Métricas de negocio en `/metrics` |
+| StackExchange.Redis | Cache de sesiones (con fallback a MemoryCache) |
 | Serilog | Logging estructurado |
 | Swashbuckle | Swagger / OpenAPI |
 | Fly.io | Hosting en producción |
@@ -184,19 +196,24 @@ AuthService/
 │   ├── Middlewares/
 │   │   └── ValidarSesionMiddleware.cs
 │   ├── Models/                 # Entidades (Usuario, SesionUsuario, IntentoLogin, etc.)
+│   ├── HealthChecks/
+│   │   ├── PostgresHealthCheck.cs
+│   │   └── RedisHealthCheck.cs
 │   ├── Repositories/           # Acceso a datos (Npgsql raw SQL)
 │   │   ├── UsuariosRepository.cs
 │   │   ├── SesionesUsuariosRepository.cs
 │   │   ├── VerificacionEmailRepository.cs
 │   │   ├── ResetPasswordRepository.cs
-│   │   └── IntentosLoginRepository.cs
+│   │   ├── IntentosLoginRepository.cs
+│   │   └── AuditoriaRepository.cs
 │   ├── Services/
 │   │   ├── IAutenticacionService.cs
 │   │   ├── AutenticacionService.cs
 │   │   ├── IEmailService.cs
-│   │   ├── EmailService.cs         # Resend SDK (producción)
-│   │   ├── SmtpEmailService.cs     # SMTP (desarrollo local)
-│   │   └── CleanupExpiredTokensService.cs  # BackgroundService (limpieza cada 1h)
+│   │   ├── EmailService.cs                 # Resend SDK (producción)
+│   │   ├── SmtpEmailService.cs             # SMTP (desarrollo local)
+│   │   ├── CleanupExpiredTokensService.cs  # BackgroundService (limpieza cada 1h)
+│   │   └── AuthMetrics.cs                  # Contadores OpenTelemetry (/metrics)
 │   ├── Utils/
 │   │   ├── JwtGenerator.cs
 │   │   ├── PasswordHasher.cs
@@ -225,7 +242,7 @@ AuthService/
 
 ## 🧪 Tests
 
-El proyecto tiene 35 tests en total:
+El proyecto tiene 41 tests en total:
 
 | Tipo | Archivo | Tests |
 |------|---------|-------|
@@ -233,7 +250,7 @@ El proyecto tiene 35 tests en total:
 | Unit | `PasswordHasherTests.cs` | 4 |
 | Unit | `TokenGeneratorTests.cs` | 5 |
 | Unit | `JwtGeneratorTests.cs` | 3 |
-| Integration | `AuthIntegrationTests.cs` | 16 |
+| Integration | `AuthIntegrationTests.cs` | 22 |
 
 Los **integration tests** levantan la aplicación real con una instancia de PostgreSQL en Docker (via Testcontainers) y reemplazan el `IEmailService` con un fake en memoria para capturar los emails enviados.
 
@@ -289,6 +306,9 @@ dotnet test --filter "FullyQualifiedName~Integration"
       "User": "",
       "Password": ""
     }
+  },
+  "Redis": {
+    "ConnectionString": ""
   },
   "Cors": {
     "AllowedOrigins": ["https://tu-frontend.com"]
@@ -363,6 +383,13 @@ docker run -p 8080:8080 \
 | POST | `/auth/logout-all` | Cerrar todas las sesiones |
 | GET | `/auth/sessions` | Listar sesiones activas |
 | POST | `/auth/sessions/revoke/{idSesion}` | Revocar sesión específica |
+
+### Monitoreo
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| GET | `/health` | Estado de dependencias (PostgreSQL + Redis) |
+| GET | `/metrics` | Métricas Prometheus (protegido en producción) |
 
 ---
 

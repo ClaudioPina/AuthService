@@ -65,7 +65,11 @@ namespace AuthService.Tests.Integration
                     ["Email:ResendApiKey"]                       = "test_key",
                     ["Email:FromAddress"]                        = "test@test.com",
                     ["Email:FromName"]                           = "Test",
-                    ["Cors:AllowedOrigins:0"]                    = "http://localhost:5173"
+                    ["Google:ClientId"]                          = "test-google-client-id.apps.googleusercontent.com",
+                    ["Cors:AllowedOrigins:0"]                    = "http://localhost:5173",
+                    // Lockout reducido para que los tests de bloqueo sean más rápidos
+                    ["Lockout:MaxIntentos"]                      = "3",
+                    ["Lockout:MinutosBloqueo"]                   = "15"
                 });
             });
 

@@ -40,7 +40,9 @@
       "Bash(cmd.exe /c \"cd \\\\\"C:\\\\Users\\\\Claudio.Piña\\\\Documents\\\\Proyectos Personales\\\\AuthService\\\\\" && dotnet build AuthService.Tests/AuthService.Tests.csproj\" 2>&1)",
       "Bash(ls \"/c/Program Files \\(x86\\)/dotnet/\")",
       "Bash(cmd.exe /c \"cd \\\\\"C:\\\\Users\\\\Claudio.Piña\\\\Documents\\\\Proyectos Personales\\\\AuthService\\\\\" && dotnet build AuthService.Tests/AuthService.Tests.csproj 2>&1\")",
-      "Bash(export PATH=$PATH:\"/c/Program Files/dotnet\")"
+      "Bash(export PATH=$PATH:\"/c/Program Files/dotnet\")",
+      "Bash(\"/c/Program Files/dotnet/dotnet.exe\" test)",
+      "Bash(export PATH=\"/c/Program Files/dotnet:$PATH\")"
     ]
   }
 }

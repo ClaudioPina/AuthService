@@ -54,11 +54,12 @@ AuthEndpoints.cs (rutas + extracción de claims)
 | `Data/` | `AppDbContext` — manejo de conexiones con retry via Polly |
 | `Models/` | Entidades: `Usuario`, `SesionUsuario`, `ResetPasswordToken`, `IntentoLogin` |
 | `DTOs/Auth/` | DTOs de request para cada endpoint |
-| `Repositories/` | Acceso a datos (queries SQL directas con Npgsql): `UsuariosRepository`, `SesionesUsuariosRepository`, `VerificacionEmailRepository`, `ResetPasswordRepository`, `IntentosLoginRepository` |
-| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `CleanupExpiredTokensService` (BackgroundService) |
+| `Repositories/` | Acceso a datos (queries SQL directas con Npgsql): `UsuariosRepository`, `SesionesUsuariosRepository`, `VerificacionEmailRepository`, `ResetPasswordRepository`, `IntentosLoginRepository`, `AuditoriaRepository` |
+| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `CleanupExpiredTokensService` (BackgroundService), `AuthMetrics` (contadores OpenTelemetry) |
 | `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 12 rutas |
 | `Configuration/` | `SwaggerConfig.cs` — extension methods para Swagger con JWT Bearer |
 | `Middlewares/` | `ValidarSesionMiddleware` — valida sesión activa en DB |
+| `HealthChecks/` | `PostgresHealthCheck.cs`, `RedisHealthCheck.cs` — health checks expuestos en `GET /health` |
 | `Utils/` | `JwtGenerator`, `PasswordHasher` (BCrypt), `PasswordPolicy`, `TokenGenerator` (SHA-256) |
 
 ## Base de datos
@@ -66,11 +67,12 @@ AuthEndpoints.cs (rutas + extracción de claims)
 **PostgreSQL** — sin Entity Framework. El esquema se gestiona con `script_DB.sql`.
 
 Tablas principales:
-- `USUARIOS` — cuentas de usuario con BCrypt hash, soporte para login local y Google (`google_sub`, `foto_url`)
+- `USUARIOS` — cuentas de usuario con BCrypt hash, soporte para login local y Google (`google_sub`, `foto_url`). Columna `actualizacion TIMESTAMPTZ` se actualiza en cada UPDATE. Email indexado como `LOWER(email)` para unicidad case-insensitive.
 - `SESIONES_USUARIOS` — sesiones activas con refresh token hasheado, IP y user-agent
 - `VERIFICACION_EMAIL` — tokens de verificación (TTL configurable, default 24h)
 - `RESET_PASSWORD` — tokens de reset (TTL configurable, default 1h)
-- `INTENTOS_LOGIN` — registro de intentos fallidos para account lockout temporal
+- `INTENTOS_LOGIN` — registro de intentos fallidos para account lockout temporal. Indexado por `LOWER(email)` con UPSERT atómico.
+- `AUDITORIA` — log de eventos de seguridad (LOGIN, RESET_CONTRASENA, CAMBIO_CONTRASENA, LOGOUT_ALL, REVOCACION_SESION) con IP, user-agent y timestamp.
 
 **Al modificar el esquema**: actualizar `script_DB.sql` y los repositories correspondientes. No hay migraciones automáticas.
 
@@ -93,6 +95,8 @@ Convención SQL del proyecto: parámetros con `@param` (Npgsql), nombres de tabl
 - `Resend` (v0.2.2) — envío de emails transaccionales
 - `Serilog.AspNetCore` + `Serilog.Sinks.Console` — logging estructurado
 - `Google.Apis.Auth` (v1.68.0) — validación de ID Tokens de Google para OAuth login
+- `OpenTelemetry.Extensions.Hosting` + `OpenTelemetry.Instrumentation.AspNetCore` + `OpenTelemetry.Exporter.Prometheus.AspNetCore` — métricas expuestas en `/metrics`
+- `Microsoft.Extensions.Caching.StackExchangeRedis` — cache de sesiones (con fallback a MemoryCache)
 
 **AuthService.Tests**
 - `xUnit` — framework de testing
@@ -113,7 +117,7 @@ El proyecto `AuthService.Tests` tiene dos categorías:
 **Integration** (`AuthService.Tests/Integration/`)
 - `AuthWebAppFactory.cs` — levanta la app real con PostgreSQL en Docker (Testcontainers) y reemplaza `IEmailService` con `FakeEmailService`
 - `FakeEmailService.cs` — implementación fake con `ConcurrentBag` para capturar emails enviados en tests
-- `AuthIntegrationTests.cs` — 16 tests de extremo a extremo sobre todos los endpoints
+- `AuthIntegrationTests.cs` — 22 tests de extremo a extremo sobre todos los endpoints
 
 Los integration tests requieren Docker corriendo. Usan `IClassFixture<AuthWebAppFactory>` (una sola instancia del contenedor por clase) e `IAsyncLifetime` para setup/teardown asíncrono.
 
@@ -142,14 +146,19 @@ El rate limiting es por IP (`RateLimitPartition.GetFixedWindowLimiter`), no glob
 
 - **Refresh token rotation**: cada refresh invalida la sesión anterior y crea una nueva
 - **Refresh token reuse detection**: si se usa un token ya invalidado, se revocan TODAS las sesiones del usuario (protección contra token robado)
-- **Account lockout**: tras N intentos fallidos de login (configurable), la cuenta se bloquea por M minutos. Registrado en tabla `INTENTOS_LOGIN`
+- **Account lockout**: tras N intentos fallidos de login (configurable), la cuenta se bloquea por M minutos. UPSERT atómico en `INTENTOS_LOGIN` con índice en `LOWER(email)`.
 - **Logout forzado al cambiar contraseña**: `ChangePasswordAsync` invalida TODAS las sesiones
+- **Logout forzado al resetear contraseña**: `ResetPasswordAsync` también invalida todas las sesiones activas
 - **Notificaciones de seguridad**: emails fire-and-forget al detectar nuevo login o cambio de contraseña
 - **Prevención de enumeración de usuarios**: `ForgotPasswordAsync` siempre retorna la misma respuesta
 - **Tokens hasheados**: refresh tokens y tokens de email/reset se almacenan como SHA-256, nunca en texto plano
 - **Docker no-root**: el contenedor corre con usuario `appuser` sin privilegios
 - **CORS configurable**: en Development acepta cualquier origen; en producción lee `Cors:AllowedOrigins`
 - **Google OAuth**: valida ID Tokens via `GoogleJsonWebSignature.ValidateAsync()` — nunca confía en datos del cliente
+- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy` en todas las respuestas
+- **Correlation ID**: header `X-Correlation-ID` propagado en todas las respuestas para trazabilidad
+- **Email case-insensitive**: emails normalizados a lowercase antes de guardar/buscar; unicidad garantizada con índice `LOWER(email)`
+- **Audit log**: eventos de seguridad registrados en tabla `AUDITORIA` de forma fire-and-forget (no bloquea el flujo principal si falla)
 
 ## Configuración esperada (appsettings.json)
 
@@ -196,6 +205,9 @@ Secciones requeridas:
       "Password": ""
     }
   },
+  "Redis": {
+    "ConnectionString": ""
+  },
   "Cors": {
     "AllowedOrigins": ["https://tu-frontend.com"]
   },
@@ -229,3 +241,9 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 - El endpoint `POST /auth/google` requiere un ID Token válido generado por el frontend usando Google Sign-In. Para obtener uno durante desarrollo, usar el Google OAuth Playground. El `Google:ClientId` debe configurarse en `appsettings.json`.
 - `CleanupExpiredTokensService` corre cada hora como `IHostedService`. Usa `IServiceScopeFactory` para crear un scope temporal por ejecución (patrón obligatorio cuando un Singleton necesita servicios Scoped).
 - Las notificaciones de login y cambio de contraseña son fire-and-forget (`_ = task.ContinueWith(...)`). Si fallan, solo se loguea un warning — no afectan el flujo principal.
+- `ValidarSesionMiddleware` cachea sesiones activas en Redis (TTL 5 min). Si Redis no está configurado (`Redis:ConnectionString` vacío), cae de vuelta a `DistributedMemoryCache` automáticamente. Las operaciones que invalidan sesiones (logout, revoke, change-password) limpian el cache antes de tocar la BD.
+- Las métricas de negocio se exponen en `GET /metrics` (formato Prometheus). Contadores: `auth_registrations_total`, `auth_logins_total`, `auth_token_refreshes_total`, todos con tag `result` para segmentar por resultado. En producción, `/metrics` está protegido.
+- `PasswordPolicy` usa lista explícita de caracteres especiales en lugar de regex `[\W_]` — más predecible y documentable en la UI.
+- Health checks en `GET /health`: `PostgresHealthCheck` verifica la conexión con una query `SELECT 1`; `RedisHealthCheck` verifica con `PING`. Retorna JSON con estado de cada dependency.
+- Las llamadas a `AuditoriaRepository.RegistrarAsync` son fire-and-forget en `AutenticacionService`. Si fallan, se loguea un warning (`LogWarning`) — no afectan el flujo principal.
+- El startup valida configuración crítica al arranque (Jwt:Key, ConnectionStrings:PostgresDb, etc.) y lanza `InvalidOperationException` si falta alguna. Fail-fast intencional.

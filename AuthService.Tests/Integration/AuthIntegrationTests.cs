@@ -203,9 +203,10 @@ namespace AuthService.Tests.Integration
             });
 
             response.StatusCode.Should().Be(HttpStatusCode.OK);
-            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-            body.GetProperty("access_token").GetString().Should().NotBeNullOrEmpty();
-            body.GetProperty("refresh_token").GetString().Should().NotBeNullOrEmpty();
+            var body   = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var tokens = body.GetProperty("tokens");
+            tokens.GetProperty("accessToken").GetString().Should().NotBeNullOrEmpty();
+            tokens.GetProperty("refreshToken").GetString().Should().NotBeNullOrEmpty();
         }
 
         [Fact]
@@ -332,6 +333,223 @@ namespace AuthService.Tests.Integration
                 password = "NuevoPass1!"
             });
             loginResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        // ── Tests: account lockout ────────────────────────────────────────────────
+
+        [Fact]
+        public async Task Login_AfterMaxFailedAttempts_ShouldReturnLockedError()
+        {
+            // Registrar y verificar usuario (necesitamos que exista en BD para generar intentos)
+            var link = await RegisterAndGetVerificationLinkAsync("lockout_test@example.com");
+            await VerifyEmailAsync(link);
+
+            // La factory configura Lockout:MaxIntentos = 3, así que con 3 intentos fallidos
+            // el siguiente debe retornar el mensaje de bloqueo.
+            for (var i = 0; i < 3; i++)
+            {
+                await _client.PostAsJsonAsync("/auth/login", new
+                {
+                    email    = "lockout_test@example.com",
+                    password = "WrongPass1!"
+                });
+            }
+
+            // El 4to intento (después del bloqueo) debe retornar el mensaje de cuenta bloqueada.
+            var response = await _client.PostAsJsonAsync("/auth/login", new
+            {
+                email    = "lockout_test@example.com",
+                password = "WrongPass1!"
+            });
+
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("message").GetString().Should().Contain("bloqueada");
+        }
+
+        // ── Tests: change-password invalida sesiones ──────────────────────────────
+
+        [Fact]
+        public async Task ChangePassword_ShouldInvalidateAllActiveSessions()
+        {
+            // Crear 2 sesiones del mismo usuario (simula 2 dispositivos)
+            var link = await RegisterAndGetVerificationLinkAsync("changepwd_sessions@example.com");
+            await VerifyEmailAsync(link);
+
+            var (token1, _) = await LoginAsync("changepwd_sessions@example.com");
+            var (token2, _) = await LoginAsync("changepwd_sessions@example.com");
+
+            // Cambiar contraseña desde la primera sesión
+            using var client1 = _factory.CreateClient();
+            client1.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token1);
+
+            var changeResponse = await client1.PostAsJsonAsync("/auth/change-password", new
+            {
+                passwordActual = "TestPass1!",
+                passwordNueva  = "NuevoPass1!"
+            });
+            changeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // La segunda sesión ya no debe funcionar — ValidarSesionMiddleware la rechaza
+            using var client2 = _factory.CreateClient();
+            client2.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token2);
+
+            var sessionsResponse = await client2.GetAsync("/auth/sessions");
+            sessionsResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        // ── Tests: logout-all invalida sesiones ───────────────────────────────────
+
+        [Fact]
+        public async Task LogoutAll_ShouldInvalidateAllSessions()
+        {
+            var link = await RegisterAndGetVerificationLinkAsync("logoutall_sessions@example.com");
+            await VerifyEmailAsync(link);
+
+            var (token1, _) = await LoginAsync("logoutall_sessions@example.com");
+            var (token2, _) = await LoginAsync("logoutall_sessions@example.com");
+
+            // Hacer logout-all desde el primer token
+            using var client1 = _factory.CreateClient();
+            client1.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token1);
+
+            var logoutAllResponse = await client1.PostAsync("/auth/logout-all", null);
+            logoutAllResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // El segundo token ya no debe ser válido
+            using var client2 = _factory.CreateClient();
+            client2.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token2);
+
+            var sessionsResponse = await client2.GetAsync("/auth/sessions");
+            sessionsResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        // ── Tests: revoke-session invalida una sesión específica ─────────────────
+
+        [Fact]
+        public async Task RevokeSession_ShouldInvalidateOnlyThatSession()
+        {
+            var link = await RegisterAndGetVerificationLinkAsync("revoke_session@example.com");
+            await VerifyEmailAsync(link);
+
+            var (token1, _) = await LoginAsync("revoke_session@example.com");
+            var (token2, _) = await LoginAsync("revoke_session@example.com");
+
+            // Obtener las sesiones activas desde token1
+            using var client1 = _factory.CreateClient();
+            client1.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token1);
+
+            var sessionsResponse = await client1.GetAsync("/auth/sessions");
+            sessionsResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            var sessionsBody = await sessionsResponse.Content.ReadFromJsonAsync<JsonElement>();
+            var sesiones     = sessionsBody.GetProperty("sesiones").EnumerateArray().ToList();
+
+            // Revocar la sesión correspondiente a token2 (la más reciente = primera en la lista)
+            var idSesionARevoke = sesiones[0].GetProperty("idSesion").GetInt64();
+            var revokeResponse  = await client1.PostAsync($"/auth/sessions/revoke/{idSesionARevoke}", null);
+            revokeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // token2 (la sesión revocada) ya no debe funcionar
+            using var client2 = _factory.CreateClient();
+            client2.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token2);
+
+            var afterRevokeResponse = await client2.GetAsync("/auth/sessions");
+            afterRevokeResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+            // token1 (la sesión que hizo la revocación) sigue activo
+            var stillActiveResponse = await client1.GetAsync("/auth/sessions");
+            stillActiveResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        // ── Tests: refresh token reuse detection ──────────────────────────────────
+
+        [Fact]
+        public async Task RefreshToken_ReuseDetected_ShouldRevokeAllSessions()
+        {
+            var link = await RegisterAndGetVerificationLinkAsync("reuse_detection@example.com");
+            await VerifyEmailAsync(link);
+
+            var (accessToken, refreshToken) = await LoginAsync("reuse_detection@example.com");
+
+            // Primer uso del refresh token — exitoso
+            var firstRefresh = await _client.PostAsJsonAsync("/auth/refresh-token", new { refreshToken });
+            firstRefresh.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // Segundo uso del mismo refresh token ya rotado — debe detectar reutilización
+            var secondRefresh = await _client.PostAsJsonAsync("/auth/refresh-token", new { refreshToken });
+            secondRefresh.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+            // El token original de acceso ya no debe funcionar (todas las sesiones revocadas)
+            using var clientWithOldToken = _factory.CreateClient();
+            clientWithOldToken.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+
+            var sessionCheck = await clientWithOldToken.GetAsync("/auth/sessions");
+            sessionCheck.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        // ── Tests: reset-password invalida sesiones activas ───────────────────────
+
+        [Fact]
+        public async Task ResetPassword_ShouldInvalidateAllActiveSessions()
+        {
+            var link = await RegisterAndGetVerificationLinkAsync("reset_sessions@example.com");
+            await VerifyEmailAsync(link);
+
+            // Crear una sesión activa antes de resetear
+            var (accessToken, _) = await LoginAsync("reset_sessions@example.com");
+
+            // Solicitar reset
+            await _client.PostAsJsonAsync("/auth/forgot-password", new
+            {
+                email = "reset_sessions@example.com"
+            });
+
+            var fake       = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
+            var resetEntry = fake!.ResetEmails.First(e => e.To == "reset_sessions@example.com");
+            var resetToken = resetEntry.Link.Split("/").Last();
+
+            var resetResponse = await _client.PostAsJsonAsync("/auth/reset-password", new
+            {
+                token       = resetToken,
+                newPassword = "NuevoPass2!"
+            });
+            resetResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // La sesión activa anterior ya no debe funcionar
+            using var clientWithOldToken = _factory.CreateClient();
+            clientWithOldToken.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+
+            var sessionCheck = await clientWithOldToken.GetAsync("/auth/sessions");
+            sessionCheck.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        // ── Helper adicional ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Hace login y retorna (accessToken, refreshToken).
+        /// Asume que el usuario ya está registrado y verificado.
+        /// </summary>
+        private async Task<(string accessToken, string refreshToken)> LoginAsync(
+            string email    = "test@example.com",
+            string password = "TestPass1!")
+        {
+            var response = await _client.PostAsJsonAsync("/auth/login", new { email, password });
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var body         = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var tokens       = body.GetProperty("tokens");
+            var accessToken  = tokens.GetProperty("accessToken").GetString()!;
+            var refreshToken = tokens.GetProperty("refreshToken").GetString()!;
+
+            return (accessToken, refreshToken);
         }
     }
 }

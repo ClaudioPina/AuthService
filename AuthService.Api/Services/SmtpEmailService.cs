@@ -67,8 +67,8 @@ namespace AuthService.Api.Services
                 <h2>Nuevo inicio de sesión detectado</h2>
                 <p>Se ha iniciado sesión en tu cuenta con los siguientes datos:</p>
                 <ul>
-                    <li><strong>IP:</strong> {ip}</li>
-                    <li><strong>Dispositivo:</strong> {userAgent}</li>
+                    <li><strong>IP:</strong> {WebUtility.HtmlEncode(ip)}</li>
+                    <li><strong>Dispositivo:</strong> {WebUtility.HtmlEncode(userAgent)}</li>
                     <li><strong>Fecha:</strong> {DateTime.UtcNow:dd/MM/yyyy HH:mm} UTC</li>
                 </ul>
                 <p>Si fuiste tú, puedes ignorar este correo.</p>

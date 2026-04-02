@@ -212,6 +212,21 @@ namespace AuthService.Api.Repositories
         }
 
         /// <summary>
+        /// Overload transaccional de InvalidarSesionPorHashAsync.
+        /// Usa la conexión y transacción compartidas provistas por el caller.
+        /// </summary>
+        public async Task<bool> InvalidarSesionPorHashAsync(string tokenHash, NpgsqlConnection conn, NpgsqlTransaction tx)
+        {
+            const string sql = @"
+                UPDATE SESIONES_USUARIOS SET estado = 0
+                WHERE token_refresh = @p_hash AND estado = 1";
+
+            using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("p_hash", tokenHash);
+            return await cmd.ExecuteNonQueryAsync() > 0;
+        }
+
+        /// <summary>
         /// Invalida TODAS las sesiones activas de un usuario.
         /// Se usa en logout-all y change-password.
         /// Retorna la cantidad de sesiones invalidadas.
@@ -226,6 +241,39 @@ namespace AuthService.Api.Repositories
             using var cmd = new NpgsqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("p_id", idUsuario);
             return await cmd.ExecuteNonQueryAsync();
+        }
+
+        /// <summary>
+        /// Overload transaccional de CrearSesionAsync.
+        /// Usa la conexión y transacción compartidas provistas por el caller.
+        /// IMPORTANTE: recibe el refresh token en texto PLANO y lo hashea internamente.
+        /// </summary>
+        public async Task<long> CrearSesionAsync(
+            long idUsuario,
+            string refreshTokenPlano,
+            DateTime expiraEn,
+            string? userAgent,
+            string? ipOrigen,
+            NpgsqlConnection conn,
+            NpgsqlTransaction tx)
+        {
+            var tokenHash = TokenGenerator.HashToken(refreshTokenPlano);
+
+            const string sql = @"
+                INSERT INTO SESIONES_USUARIOS
+                    (id_usuario, token_refresh, expira_en, user_agent, ip_origen, creacion, estado)
+                VALUES
+                    (@p_id_usuario, @p_token, @p_expira_en, @p_user_agent, @p_ip, CURRENT_TIMESTAMP, 1)
+                RETURNING id_sesion";
+
+            using var cmd = new NpgsqlCommand(sql, conn, tx);
+            cmd.Parameters.AddWithValue("p_id_usuario", idUsuario);
+            cmd.Parameters.AddWithValue("p_token",      tokenHash);
+            cmd.Parameters.AddWithValue("p_expira_en",  expiraEn);
+            cmd.Parameters.AddWithValue("p_user_agent", (object?)userAgent ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("p_ip",         (object?)ipOrigen  ?? DBNull.Value);
+
+            return Convert.ToInt64(await cmd.ExecuteScalarAsync());
         }
 
         /// <summary>
@@ -248,10 +296,12 @@ namespace AuthService.Api.Repositories
         /// <summary>
         /// Limita a N sesiones activas por usuario: desactiva las más antiguas
         /// cuando se supera el máximo. Se llama después de crear una sesión nueva.
-        /// Usa ROW_NUMBER() para identificar las sesiones a eliminar.
+        /// Retorna los IDs de sesiones desactivadas para que el caller invalide su cache.
         /// </summary>
-        public async Task LimitarSesionesActivasAsync(long idUsuario, int maxSesiones)
+        public async Task<List<long>> LimitarSesionesActivasAsync(long idUsuario, int maxSesiones)
         {
+            // RETURNING id_sesion permite obtener los IDs afectados para limpiar el cache
+            // distribuido antes de que expire el TTL de 5 minutos.
             const string sql = @"
                 UPDATE SESIONES_USUARIOS SET estado = 0
                 WHERE id_sesion IN (
@@ -262,13 +312,20 @@ namespace AuthService.Api.Repositories
                         WHERE id_usuario = @p_id AND estado = 1
                     ) AS sub
                     WHERE rn > @p_max
-                )";
+                )
+                RETURNING id_sesion";
 
+            var ids = new List<long>();
             using var conn = await _db.GetOpenConnectionAsync();
             using var cmd = new NpgsqlCommand(sql, conn);
             cmd.Parameters.AddWithValue("p_id",  idUsuario);
             cmd.Parameters.AddWithValue("p_max", maxSesiones);
-            await cmd.ExecuteNonQueryAsync();
+
+            using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+                ids.Add(reader.GetInt64(0));
+
+            return ids;
         }
     }
 }

@@ -7,7 +7,7 @@
 -- =========================================================
 CREATE TABLE USUARIOS (
     id_usuario       INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email            VARCHAR(150)  NOT NULL UNIQUE,
+    email            VARCHAR(150)  NOT NULL,
     nombre           VARCHAR(100),
     foto_url         VARCHAR(300),
     password_hash    VARCHAR(200),
@@ -19,7 +19,10 @@ CREATE TABLE USUARIOS (
     estado           SMALLINT      DEFAULT 1 NOT NULL CHECK (estado IN (0, 1))
 );
 
-CREATE INDEX IDX_USUARIOS_PROVEEDOR_LOGIN ON USUARIOS (proveedor_login);
+-- Índice único funcional sobre LOWER(email): garantiza unicidad case-insensitive.
+-- Permite que 'User@Mail.com' y 'user@mail.com' no coexistan en BD.
+CREATE UNIQUE INDEX IDX_USUARIOS_EMAIL         ON USUARIOS (LOWER(email));
+CREATE INDEX        IDX_USUARIOS_PROVEEDOR_LOGIN ON USUARIOS (proveedor_login);
 
 -- =========================================================
 -- TABLA: SESIONES_USUARIOS
@@ -88,5 +91,26 @@ CREATE TABLE INTENTOS_LOGIN (
     bloqueado_hasta TIMESTAMPTZ
 );
 
-CREATE INDEX IDX_INTENTOS_EMAIL    ON INTENTOS_LOGIN (email);
-CREATE INDEX IDX_INTENTOS_IP       ON INTENTOS_LOGIN (ip_origen);
+-- Índice único funcional sobre LOWER(email): garantiza una sola fila por email
+-- y habilita el ON CONFLICT (LOWER(email)) del UPSERT en IntentosLoginRepository.
+CREATE UNIQUE INDEX IDX_INTENTOS_EMAIL ON INTENTOS_LOGIN (LOWER(email));
+CREATE INDEX IDX_INTENTOS_IP           ON INTENTOS_LOGIN (ip_origen);
+
+-- =========================================================
+-- TABLA: AUDITORIA
+-- Registra operaciones sensibles de seguridad para trazabilidad.
+-- Permite responder "quién hizo qué, cuándo y desde dónde".
+-- usuario_id es nullable: puede ser NULL si el usuario no pudo
+-- determinarse (ej. intento de login con email inexistente).
+-- =========================================================
+CREATE TABLE AUDITORIA (
+    id_auditoria  BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    usuario_id    BIGINT,
+    accion        VARCHAR(50) NOT NULL,
+    ip            VARCHAR(45),
+    user_agent    VARCHAR(300),
+    timestamp     TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IDX_AUDITORIA_USUARIO   ON AUDITORIA (usuario_id);
+CREATE INDEX IDX_AUDITORIA_TIMESTAMP ON AUDITORIA (timestamp);

@@ -1,6 +1,9 @@
 using System.Text;
 using System.Threading.RateLimiting;
 using AuthService.Api.Configuration;
+using AuthService.Api.HealthChecks;
+using Microsoft.AspNetCore.HttpOverrides;
+using Serilog.Context;
 using AuthService.Api.Data;
 using AuthService.Api.Endpoints;
 using AuthService.Api.Middlewares;
@@ -137,7 +140,11 @@ else
     builder.Services.AddDistributedMemoryCache();
 
 // ── Health Checks ──────────────────────────────────────────────────────────────
-builder.Services.AddHealthChecks();
+// Implementaciones custom sin paquetes externos: evita dependencias innecesarias.
+// GET /health retorna JSON con estado de cada dependencia.
+builder.Services.AddHealthChecks()
+    .AddCheck<PostgresHealthCheck>("postgres")
+    .AddCheck<RedisHealthCheck>("redis");
 
 // ── Inyección de dependencias ──────────────────────────────────────────────────
 // Scoped: se crea una instancia nueva por cada request HTTP.
@@ -147,6 +154,7 @@ builder.Services.AddScoped<VerificacionEmailRepository>();
 builder.Services.AddScoped<ResetPasswordRepository>();
 builder.Services.AddScoped<SesionesUsuariosRepository>();
 builder.Services.AddScoped<IntentosLoginRepository>();
+builder.Services.AddScoped<AuditoriaRepository>();
 builder.Services.AddScoped<IAutenticacionService, AutenticacionService>();
 
 // Seleccionar proveedor de email según configuración.
@@ -173,19 +181,92 @@ builder.Services.AddTransient<IResend, ResendClient>();
 // ── Build ──────────────────────────────────────────────────────────────────────
 var app = builder.Build();
 
+// ── Validación de configuración crítica ───────────────────────────────────────
+// Si falta algún valor obligatorio la app se detiene inmediatamente con un mensaje
+// claro. Mejor fallar rápido al arrancar que fallar tarde con un error críptico
+// en mitad de un request.
+{
+    var cfg    = app.Configuration;
+    var errores = new List<string>();
+
+    var jwtKey = cfg["Jwt:Key"];
+    if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+        errores.Add("Jwt:Key debe tener al menos 32 caracteres.");
+
+    if (string.IsNullOrWhiteSpace(cfg["App:BaseUrl"]))
+        errores.Add("App:BaseUrl es obligatorio (se usa en los links de email).");
+
+    if (string.IsNullOrWhiteSpace(cfg["Email:FromAddress"]))
+        errores.Add("Email:FromAddress es obligatorio.");
+
+    if (string.IsNullOrWhiteSpace(cfg["Google:ClientId"]))
+        errores.Add("Google:ClientId es obligatorio para el login con Google.");
+
+    var dbConn = Environment.GetEnvironmentVariable("DATABASE_URL")
+                 ?? cfg.GetConnectionString("PostgresDb");
+    if (string.IsNullOrWhiteSpace(dbConn))
+        errores.Add("Se requiere DATABASE_URL (env) o ConnectionStrings:PostgresDb (appsettings).");
+
+    if (errores.Count > 0)
+    {
+        foreach (var e in errores)
+            Log.Fatal("Configuración inválida: {Error}", e);
+        Log.CloseAndFlush();
+        Environment.Exit(1);
+    }
+}
+
 // ── Pipeline de middleware (el orden importa) ──────────────────────────────────
+
+// Correlation ID: debe ir primero para que TODOS los logs del request lo incluyan.
+// Si el cliente envía X-Correlation-Id (ej. frontend), se propaga; si no, se genera uno nuevo.
+app.Use(async (ctx, next) =>
+{
+    var correlationId = ctx.Request.Headers["X-Correlation-Id"].FirstOrDefault()
+                        ?? Guid.NewGuid().ToString("N");
+    ctx.Response.Headers["X-Correlation-Id"] = correlationId;
+    using (LogContext.PushProperty("CorrelationId", correlationId))
+    {
+        await next();
+    }
+});
+
+// Security headers: previenen clickjacking y MIME sniffing en clientes web.
+app.Use(async (ctx, next) =>
+{
+    ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    ctx.Response.Headers["X-Frame-Options"]        = "DENY";
+    ctx.Response.Headers["Referrer-Policy"]        = "no-referrer";
+    await next();
+});
+
 app.UseSerilogRequestLogging(); // log de cada request HTTP
 app.UseSwaggerInDevelopment();  // Swagger solo en Development
 app.UseExceptionHandler(errorApp =>
     errorApp.Run(async ctx =>
     {
-        ctx.Response.StatusCode  = StatusCodes.Status500InternalServerError;
-        ctx.Response.ContentType = "application/json";
         var ex = ctx.Features.Get<Microsoft.AspNetCore.Diagnostics.IExceptionHandlerFeature>()?.Error;
-        if (ex is UnauthorizedAccessException)
-            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        await ctx.Response.WriteAsJsonAsync(new { message = ex?.Message ?? "Error interno del servidor." });
+        ctx.Response.StatusCode = ex is UnauthorizedAccessException
+            ? StatusCodes.Status401Unauthorized
+            : StatusCodes.Status500InternalServerError;
+        ctx.Response.ContentType = "application/json";
+
+        // En producción se devuelve un mensaje genérico para no filtrar detalles
+        // internos (stack traces, nombres de tablas, mensajes de Npgsql, etc.).
+        // En Development se expone el mensaje real para facilitar el debug local.
+        var message = app.Environment.IsDevelopment()
+            ? ex?.Message ?? "Error interno del servidor."
+            : "Ocurrió un error inesperado. Por favor, intenta nuevamente más tarde.";
+
+        await ctx.Response.WriteAsJsonAsync(new { message });
     }));
+// Procesar X-Forwarded-For y X-Forwarded-Proto desde el proxy de Fly.io.
+// Sin esto, RemoteIpAddress contiene la IP del proxy y el rate limiting y la
+// auditoría operan sobre una IP incorrecta.
+app.UseForwardedHeaders(new ForwardedHeadersOptions
+{
+    ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
+});
 app.UseHttpsRedirection();
 app.UseCors();
 app.UseRateLimiter();
@@ -194,8 +275,47 @@ app.UseAuthorization();
 app.UseMiddleware<ValidarSesionMiddleware>();
 
 // ── Endpoints ─────────────────────────────────────────────────────────────────
-app.MapHealthChecks("/health");              // GET /health → {"status":"Healthy"}
-app.MapPrometheusScrapingEndpoint();         // GET /metrics → formato Prometheus
+
+// /health con respuesta detallada: muestra el estado de cada dependencia (postgres, redis).
+app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        var result = new
+        {
+            status = report.Status.ToString(),
+            checks = report.Entries.Select(e => new
+            {
+                name        = e.Key,
+                status      = e.Value.Status.ToString(),
+                description = e.Value.Description
+            })
+        };
+        await ctx.Response.WriteAsJsonAsync(result);
+    }
+});
+
+// /metrics con protección opcional por API key.
+// Si Metrics:ApiKey está definido en config, exige header X-Metrics-Token.
+// Si no está definido, el endpoint es público (útil en desarrollo local).
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Path == "/metrics")
+    {
+        var apiKey = app.Configuration["Metrics:ApiKey"];
+        if (!string.IsNullOrWhiteSpace(apiKey) &&
+            (!ctx.Request.Headers.TryGetValue("X-Metrics-Token", out var token) || token != apiKey))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            await ctx.Response.WriteAsync("Unauthorized");
+            return;
+        }
+    }
+    await next();
+});
+app.MapPrometheusScrapingEndpoint();
+
 app.MapAuthEndpoints();                      // definidos en Endpoints/AuthEndpoints.cs
 
 // En producción (Docker/Fly.io) escucha en 0.0.0.0:8080
