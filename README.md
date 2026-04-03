@@ -147,7 +147,7 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 - **Google OAuth**: validación de ID Tokens server-side vía `Google.Apis.Auth` — no se confía en datos del cliente
 - **CORS configurable**: permisivo en Development, restringido en producción
 - **Cache de sesiones**: Redis (TTL 5 min) reduce queries a BD en cada request autenticado; fallback automático a MemoryCache si Redis no está configurado
-- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy` en todas las respuestas
+- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` en todas las respuestas
 - **Correlation ID**: header `X-Correlation-ID` propagado en cada respuesta para trazabilidad entre servicios
 - **Email case-insensitive**: emails normalizados a lowercase; unicidad garantizada con índice parcial `LOWER(email)` en PostgreSQL
 - **Logout forzado al resetear contraseña**: `ResetPasswordAsync` invalida todas las sesiones activas además de cambiar la contraseña
@@ -392,7 +392,8 @@ docker run -p 8080:8080 \
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | GET | `/auth/me` | Perfil del usuario autenticado |
-| POST | `/auth/change-password` | Cambiar contraseña (invalida todas las sesiones) |
+| POST | `/auth/change-password` | Solicitar cambio de contraseña (envía email de confirmación) |
+| GET | `/auth/confirm-change-password/{token}` | Confirmar cambio de contraseña (invalida todas las sesiones) |
 | POST | `/auth/logout` | Cerrar sesión actual |
 | POST | `/auth/logout-all` | Cerrar todas las sesiones |
 | GET | `/auth/sessions` | Listar sesiones activas |

@@ -62,15 +62,20 @@ CREATE INDEX IDX_VERIFEMAIL_TOKEN      ON VERIFICACION_EMAIL (token);
 
 -- =========================================================
 -- TABLA: RESET_PASSWORD
--- Tokens temporales para recuperación de contraseña (TTL: 1h).
+-- Tokens temporales para recuperación y confirmación de cambio de contraseña.
+-- tipo = 'reset'          → flujo forgot-password (usuario no autenticado)
+-- tipo = 'change_confirm' → flujo change-password (usuario autenticado, confirma por email)
+-- nuevo_password_hash solo se usa cuando tipo = 'change_confirm'.
 -- =========================================================
 CREATE TABLE RESET_PASSWORD (
-    id_reset   INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    id_usuario INTEGER      NOT NULL REFERENCES USUARIOS (id_usuario),
-    token      VARCHAR(200) NOT NULL,
-    expira_en  TIMESTAMPTZ  NOT NULL,
-    creacion   TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    estado     SMALLINT     DEFAULT 1 NOT NULL CHECK (estado IN (0, 1))
+    id_reset             INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id_usuario           INTEGER      NOT NULL REFERENCES USUARIOS (id_usuario),
+    token                VARCHAR(200) NOT NULL,
+    expira_en            TIMESTAMPTZ  NOT NULL,
+    creacion             TIMESTAMPTZ  DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    estado               SMALLINT     DEFAULT 1 NOT NULL CHECK (estado IN (0, 1)),
+    tipo                 VARCHAR(20)  NOT NULL DEFAULT 'reset',
+    nuevo_password_hash  VARCHAR(100) NULL
 );
 
 CREATE INDEX IDX_RESETPASS_ID_USUARIO ON RESET_PASSWORD (id_usuario);

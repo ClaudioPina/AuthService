@@ -3,7 +3,6 @@ using AuthService.Api.Dtos.Auth;
 using AuthService.Api.Repositories;
 using AuthService.Api.Utils;
 using Microsoft.Extensions.Caching.Distributed;
-using System.Text.Json;
 
 namespace AuthService.Api.Services
 {
@@ -32,10 +31,7 @@ namespace AuthService.Api.Services
         private readonly AppDbContext _db;
         private readonly AuditoriaRepository _auditoriaRepo;
         private readonly IHibpService _hibp;
-        private const string PasswordChangeCachePrefix = "pwdchange:";
         private const int PasswordChangeConfirmationMinutes = 30;
-
-        private sealed record PendingPasswordChange(long UserId, string NewPasswordHash);
 
         public AutenticacionService(
             UsuariosRepository usuariosRepo,
@@ -606,14 +602,12 @@ namespace AuthService.Api.Services
             var expiraEn = DateTime.UtcNow.AddMinutes(PasswordChangeConfirmationMinutes);
             var confirmationLink = $"{_config["App:BaseUrl"]}/auth/confirm-change-password/{token}";
 
-            var payload = JsonSerializer.Serialize(new PendingPasswordChange(usuario.IdUsuario, hashNuevo));
-            await _cache.SetStringAsync(
-                BuildPasswordChangeCacheKey(tokenHash),
-                payload,
-                new DistributedCacheEntryOptions
-                {
-                    AbsoluteExpiration = expiraEn
-                });
+            await _resetRepo.CrearTokenResetAsync(
+                usuario.IdUsuario,
+                tokenHash,
+                expiraEn,
+                tipo: "change_confirm",
+                nuevoPasswordHash: hashNuevo);
 
             await _emailService.SendPasswordChangeVerificationEmailAsync(usuario.Email, confirmationLink);
 
@@ -640,33 +634,21 @@ namespace AuthService.Api.Services
             if (string.IsNullOrWhiteSpace(token))
                 return Results.BadRequest(new { message = "El token de confirmación es obligatorio." });
 
-            var tokenHash = TokenGenerator.HashToken(token);
-            var cached = await _cache.GetStringAsync(BuildPasswordChangeCacheKey(tokenHash));
-            if (string.IsNullOrWhiteSpace(cached))
+            var tokenHash   = TokenGenerator.HashToken(token);
+            var resetToken  = await _resetRepo.ObtenerTokenValidoAsync(tokenHash, tipo: "change_confirm");
+
+            if (resetToken == null || string.IsNullOrWhiteSpace(resetToken.NuevoPasswordHash))
                 return Results.BadRequest(new { message = "El token es inválido o ha expirado." });
 
-            PendingPasswordChange? pending;
-            try
-            {
-                pending = JsonSerializer.Deserialize<PendingPasswordChange>(cached);
-            }
-            catch
-            {
-                pending = null;
-            }
+            await _resetRepo.MarcarTokenComoUsadoAsync(resetToken.IdReset);
+            await _usuariosRepo.ActualizarPasswordAsync(resetToken.IdUsuario, resetToken.NuevoPasswordHash);
 
-            if (pending == null || pending.UserId <= 0 || string.IsNullOrWhiteSpace(pending.NewPasswordHash))
-                return Results.BadRequest(new { message = "No se pudo procesar la confirmación del cambio de contraseña." });
-
-            await _cache.RemoveAsync(BuildPasswordChangeCacheKey(tokenHash));
-            await _usuariosRepo.ActualizarPasswordAsync(pending.UserId, pending.NewPasswordHash);
-
-            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(pending.UserId);
+            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(resetToken.IdUsuario);
             foreach (var s in sesionesActivas)
                 await RemoveSesionCacheAsync(s.IdSesion);
-            await _sesionesRepo.InvalidarTodasPorUsuarioAsync(pending.UserId);
+            await _sesionesRepo.InvalidarTodasPorUsuarioAsync(resetToken.IdUsuario);
 
-            var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(pending.UserId);
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(resetToken.IdUsuario);
             if (usuario != null)
             {
                 _ = _emailService.SendPasswordChangedNotificationAsync(usuario.Email)
@@ -674,9 +656,9 @@ namespace AuthService.Api.Services
                         TaskContinuationOptions.OnlyOnFaulted);
             }
 
-            _logger.LogInformation("Cambio de contraseña confirmado para usuario {IdUsuario}", pending.UserId);
+            _logger.LogInformation("Cambio de contraseña confirmado para usuario {IdUsuario}", resetToken.IdUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(pending.UserId, "CAMBIO_CONTRASENA_CONFIRMADO", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(resetToken.IdUsuario, "CAMBIO_CONTRASENA_CONFIRMADO", null, null)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de confirmación de cambio de contraseña."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
@@ -878,9 +860,6 @@ namespace AuthService.Api.Services
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────────
-
-        private static string BuildPasswordChangeCacheKey(string tokenHash)
-            => $"{PasswordChangeCachePrefix}{tokenHash}";
 
         /// <summary>
         /// Elimina la entrada de cache de una sesión de forma segura.

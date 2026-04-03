@@ -30,5 +30,15 @@ namespace AuthService.Api.Models
         /// Estado lógico (1 disponible, 0 usado/inactivo).
         /// </summary>
         public int Estado { get; set; }
+
+        /// <summary>
+        /// Tipo de token: "reset" (forgot-password) o "change_confirm" (cambio confirmado por email).
+        /// </summary>
+        public string Tipo { get; set; } = "reset";
+
+        /// <summary>
+        /// Hash BCrypt de la nueva contraseña. Solo se usa cuando Tipo = "change_confirm".
+        /// </summary>
+        public string? NuevoPasswordHash { get; set; }
     }
 }

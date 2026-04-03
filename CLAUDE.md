@@ -56,7 +56,7 @@ AuthEndpoints.cs (rutas + extracción de claims)
 | `DTOs/Auth/` | DTOs de request para cada endpoint |
 | `Repositories/` | Acceso a datos (queries SQL directas con Npgsql): `UsuariosRepository`, `SesionesUsuariosRepository`, `VerificacionEmailRepository`, `ResetPasswordRepository`, `IntentosLoginRepository`, `AuditoriaRepository` |
 | `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `IHibpService` + `HibpService` (HaveIBeenPwned k-anonymity), `CleanupExpiredTokensService` (BackgroundService), `AuthMetrics` (contadores OpenTelemetry) |
-| `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 12 rutas |
+| `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 15 rutas |
 | `Configuration/` | `SwaggerConfig.cs` — extension methods para Swagger con JWT Bearer |
 | `Middlewares/` | `ValidarSesionMiddleware` — valida sesión activa en DB |
 | `HealthChecks/` | `PostgresHealthCheck.cs`, `RedisHealthCheck.cs` — health checks expuestos en `GET /health` |
@@ -141,6 +141,7 @@ Para que `WebApplicationFactory` funcione, `Program.cs` termina con `public part
 | POST | `/auth/resend-verification` | Público | 3 req/min por IP |
 | GET | `/auth/me` | JWT requerido | — |
 | POST | `/auth/change-password` | JWT requerido | — |
+| GET | `/auth/confirm-change-password/{token}` | Público | — |
 | POST | `/auth/logout` | JWT requerido | — |
 | POST | `/auth/logout-all` | JWT requerido | — |
 | GET | `/auth/sessions` | JWT requerido | — |
@@ -161,7 +162,7 @@ El rate limiting es por IP (`RateLimitPartition.GetFixedWindowLimiter`), no glob
 - **Docker no-root**: el contenedor corre con usuario `appuser` sin privilegios
 - **CORS configurable**: en Development acepta cualquier origen; en producción lee `Cors:AllowedOrigins`
 - **Google OAuth**: valida ID Tokens via `GoogleJsonWebSignature.ValidateAsync()` — nunca confía en datos del cliente
-- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy` en todas las respuestas
+- **Security headers**: `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy` en todas las respuestas
 - **Correlation ID**: header `X-Correlation-ID` propagado en todas las respuestas para trazabilidad
 - **Email case-insensitive**: emails normalizados a lowercase antes de guardar/buscar; unicidad garantizada con índice `LOWER(email)`
 - **Audit log**: eventos de seguridad registrados en tabla `AUDITORIA` de forma fire-and-forget (no bloquea el flujo principal si falla)
@@ -257,3 +258,4 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 - `HibpService` usa `HttpClient` tipado con timeout de 3 segundos y `User-Agent: AuthService/1.0`. Si la API no responde, `EsPasswordCompromisedAsync` retorna `false` (fail open) y loguea un `LogWarning`. En tests se usa `FakeHibpService` para evitar llamadas HTTP reales.
 - `ResendVerificationAsync` siempre retorna el mismo mensaje independientemente de si el email existe o ya está verificado, evitando enumeración de usuarios. En Development incluye `verificar_url_dev` en la respuesta.
 - `GET /auth/me` retorna `id`, `email`, `nombre`, `foto_url`, `email_verificado`, `proveedor_login` y `creacion`. No incluye `password_hash` ni `google_sub`.
+- `POST /auth/change-password` inicia un flujo de confirmación por email: genera un token (TTL 30 min), lo persiste en `RESET_PASSWORD` con `tipo = 'change_confirm'` y guarda el BCrypt hash pre-computado de la nueva contraseña en `nuevo_password_hash`. `GET /auth/confirm-change-password/{token}` aplica el cambio y revoca todas las sesiones. El token de confirmación NO usa cache distribuida — es robusto frente a reinicios y despliegues multi-instancia.
