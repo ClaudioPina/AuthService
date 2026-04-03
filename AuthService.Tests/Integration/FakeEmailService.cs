@@ -13,6 +13,7 @@ namespace AuthService.Tests.Integration
     {
         public ConcurrentBag<(string To, string Link)> VerificationEmails { get; } = new();
         public ConcurrentBag<(string To, string Link)> ResetEmails { get; } = new();
+        public ConcurrentBag<(string To, string Link)> PasswordChangeVerificationEmails { get; } = new();
 
         public Task SendVerificationEmailAsync(string toEmail, string verificationLink)
         {
@@ -23,6 +24,12 @@ namespace AuthService.Tests.Integration
         public Task SendPasswordResetEmailAsync(string toEmail, string resetLink)
         {
             ResetEmails.Add((toEmail, resetLink));
+            return Task.CompletedTask;
+        }
+
+        public Task SendPasswordChangeVerificationEmailAsync(string toEmail, string confirmationLink)
+        {
+            PasswordChangeVerificationEmails.Add((toEmail, confirmationLink));
             return Task.CompletedTask;
         }
 
