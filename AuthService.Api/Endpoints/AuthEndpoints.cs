@@ -39,8 +39,23 @@ namespace AuthService.Api.Endpoints
                 .WithOpenApi()
                 .RequireRateLimiting("login-policy");
 
-            auth.MapGet("/verify-email/{token}", async (string token, IAutenticacionService svc) =>
-                await svc.VerifyEmailAsync(token))
+            auth.MapGet("/verify-email/{token}", async (
+                string token,
+                IAutenticacionService svc,
+                IConfiguration cfg,
+                HttpContext ctx) =>
+            {
+                var result = await svc.VerifyEmailAsync(token);
+
+                // Si el endpoint se abre desde navegador (link del email), redirigir al login
+                // o a una pantalla de resultado. Para clientes API/tests se mantiene JSON.
+                if (WantsBrowserNavigation(ctx) && result is IStatusCodeHttpResult statusResult)
+                {
+                    return Results.Redirect(BuildVerificationRedirectUrl(cfg, statusResult.StatusCode));
+                }
+
+                return result;
+            })
                 .WithName("VerifyEmail")
                 .WithOpenApi();
 
@@ -53,6 +68,11 @@ namespace AuthService.Api.Endpoints
             auth.MapPost("/reset-password", async (ResetPasswordRequest req, IAutenticacionService svc) =>
                 await svc.ResetPasswordAsync(req))
                 .WithName("ResetPassword")
+                .WithOpenApi();
+
+            auth.MapGet("/confirm-change-password/{token}", async (string token, IAutenticacionService svc) =>
+                await svc.ConfirmPasswordChangeAsync(token))
+                .WithName("ConfirmChangePassword")
                 .WithOpenApi();
 
             auth.MapPost("/resend-verification", async (ResendVerificationRequest req, IAutenticacionService svc) =>
@@ -143,6 +163,113 @@ namespace AuthService.Api.Endpoints
             if (claim is null || !long.TryParse(claim.Value, out var id))
                 throw new UnauthorizedAccessException("Claim 'id_sesion' no encontrado en el JWT.");
             return id;
+        }
+
+        /// <summary>
+        /// Detecta navegación desde navegador/webview de forma robusta.
+        /// Algunos clientes de correo no envían "Accept: text/html", por eso
+        /// se consideran también headers de navegación y user-agent.
+        /// </summary>
+        private static bool WantsBrowserNavigation(HttpContext ctx)
+        {
+            var accept = ctx.Request.Headers.Accept.ToString();
+            if (accept.Contains("text/html", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var secFetchDest = ctx.Request.Headers["Sec-Fetch-Dest"].ToString();
+            if (secFetchDest.Equals("document", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var secFetchMode = ctx.Request.Headers["Sec-Fetch-Mode"].ToString();
+            if (secFetchMode.Equals("navigate", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var userAgent = ctx.Request.Headers.UserAgent.ToString();
+            if (!string.IsNullOrWhiteSpace(userAgent) &&
+                userAgent.Contains("Mozilla", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// URL base de pantalla post-verificación.
+        /// Prioriza App:VerificationResultUrl; si no existe, usa App:LoginUrl;
+        /// y como último fallback App:BaseUrl + /login.
+        /// </summary>
+        private static string GetVerificationResultBaseUrl(IConfiguration cfg)
+        {
+            var configured = cfg["App:VerificationResultUrl"];
+            if (!string.IsNullOrWhiteSpace(configured))
+                return configured;
+
+            configured = cfg["App:LoginUrl"];
+            if (!string.IsNullOrWhiteSpace(configured))
+                return configured;
+
+            var baseUrl = cfg["App:BaseUrl"]?.TrimEnd('/') ?? string.Empty;
+            return $"{baseUrl}/login";
+        }
+
+        /// <summary>
+        /// Construye la URL de redirección con parámetros de estado para que el frontend
+        /// muestre una pantalla amigable de éxito o error.
+        /// </summary>
+        private static string BuildVerificationRedirectUrl(IConfiguration cfg, int? statusCode)
+        {
+            var isSuccess = statusCode is >= 200 and < 300;
+            var status = isSuccess ? "success" : "error";
+            var title = isSuccess ? "Email verificado" : "Verificación fallida";
+            var message = isSuccess
+                ? "Tu cuenta fue verificada correctamente. Ya puedes iniciar sesión."
+                : "No pudimos verificar tu email. El enlace puede haber expirado o ya fue utilizado.";
+
+            var baseUrl = GetVerificationResultBaseUrl(cfg);
+            return AppendQueryToUrl(baseUrl, new Dictionary<string, string>
+            {
+                ["status"] = status,
+                ["title"] = title,
+                ["message"] = message,
+                ["loginUrl"] = GetLoginUrl(cfg)
+            });
+        }
+
+        /// <summary>
+        /// URL del login del frontend para la redirección final.
+        /// </summary>
+        private static string GetLoginUrl(IConfiguration cfg)
+        {
+            var configured = cfg["App:LoginUrl"];
+            if (!string.IsNullOrWhiteSpace(configured))
+                return configured;
+
+            var baseUrl = cfg["App:BaseUrl"]?.TrimEnd('/') ?? string.Empty;
+            return $"{baseUrl}/login";
+        }
+
+        /// <summary>
+        /// Agrega query string a una URL normal o a una URL con hash-router
+        /// (ej: http://localhost:5500/#/verify-result).
+        /// </summary>
+        private static string AppendQueryToUrl(string url, IDictionary<string, string> query)
+        {
+            var encodedPairs = query
+                .Select(kv => $"{Uri.EscapeDataString(kv.Key)}={Uri.EscapeDataString(kv.Value)}");
+            var queryString = string.Join("&", encodedPairs);
+            if (string.IsNullOrWhiteSpace(queryString))
+                return url;
+
+            var hashIndex = url.IndexOf('#');
+            if (hashIndex >= 0)
+            {
+                var prefix = url[..(hashIndex + 1)];
+                var hashPart = url[(hashIndex + 1)..];
+                var separator = hashPart.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+                return $"{prefix}{hashPart}{separator}{queryString}";
+            }
+
+            var defaultSeparator = url.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+            return $"{url}{defaultSeparator}{queryString}";
         }
     }
 }

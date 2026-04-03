@@ -14,6 +14,7 @@ namespace AuthService.Api.Services
         Task<IResult> VerifyEmailAsync(string token);
         Task<IResult> ForgotPasswordAsync(ForgotPasswordRequest request);
         Task<IResult> ResetPasswordAsync(ResetPasswordRequest request);
+        Task<IResult> ConfirmPasswordChangeAsync(string token);
         Task<IResult> RefreshTokenAsync(RefreshTokenRequest request, string? userAgent, string? ip);
         Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, long idUsuario);
         Task<IResult> LogoutAsync(long idSesion);

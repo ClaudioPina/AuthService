@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Resultado de verificación</title>
+  <style>
+    :root {
+      --bg-1: #02040a;
+      --bg-2: #0b111b;
+      --card-bg: rgba(246, 248, 252, 0.96);
+      --text: #121722;
+      --muted: #4a5666;
+      --ok: #12724b;
+      --err: #a53230;
+      --shadow: 0 35px 70px rgba(0, 0, 0, 0.45);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background:
+        radial-gradient(circle at 20% 20%, #16314a 0%, transparent 35%),
+        radial-gradient(circle at 80% 80%, #261447 0%, transparent 35%),
+        linear-gradient(160deg, var(--bg-1), var(--bg-2));
+      color: #ffffff;
+      overflow: hidden;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: -30%;
+      background:
+        conic-gradient(from 0deg, rgba(43, 160, 255, 0.12), rgba(177, 72, 255, 0.12), rgba(34, 191, 147, 0.12), rgba(43, 160, 255, 0.12));
+      filter: blur(80px);
+      animation: spin 22s linear infinite;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    .stage {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      position: relative;
+      z-index: 2;
+    }
+
+    .hint-top {
+      position: fixed;
+      top: 72px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: #b9c8df;
+      text-align: center;
+      opacity: 0.85;
+      z-index: 3;
+    }
+
+    .card {
+      width: min(560px, 92vw);
+      min-height: 360px;
+      background: var(--card-bg);
+      color: #ffffff;
+      border-radius: 24px;
+      padding: 34px 34px 30px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+      box-shadow: var(--shadow);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      backdrop-filter: blur(8px);
+      position: relative;
+      overflow: hidden;
+      animation: rise 0.55s ease-out;
+    }
+
+    .card::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(120deg, rgba(255, 255, 255, 0.14), transparent 42%);
+      pointer-events: none;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .icon {
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      font-size: 20px;
+      color: #ffffff;
+    }
+
+    .status {
+      margin: 0;
+      font-size: 12px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      font-weight: 700;
+    }
+
+    .status.success { color: #ccffe6; }
+    .status.error { color: #ffd3d1; }
+
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      line-height: 1.15;
+      color: #ffffff;
+      position: relative;
+      z-index: 1;
+    }
+
+    .message {
+      margin: 0;
+      color: #d5dfec;
+      font-size: 18px;
+      line-height: 1.4;
+      position: relative;
+      z-index: 1;
+    }
+
+    .redirect {
+      margin-top: 8px;
+      font-size: 15px;
+      color: #d5dfec;
+      position: relative;
+      z-index: 1;
+    }
+
+    .redirect a {
+      color: #8dd0ff;
+      text-decoration: underline;
+      font-weight: 600;
+    }
+
+    .progress {
+      width: 100%;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.2);
+      overflow: hidden;
+      position: relative;
+      z-index: 1;
+    }
+
+    .bar {
+      height: 100%;
+      width: 100%;
+      transform-origin: left center;
+      animation: shrink 3s linear forwards;
+    }
+
+    .card.success {
+      background: linear-gradient(165deg, rgba(20, 112, 85, 0.9), rgba(12, 54, 74, 0.95));
+    }
+
+    .card.error {
+      background: linear-gradient(165deg, rgba(125, 42, 41, 0.92), rgba(63, 22, 42, 0.95));
+    }
+
+    .card.success .icon { background: rgba(13, 213, 132, 0.27); }
+    .card.error .icon { background: rgba(255, 121, 121, 0.25); }
+    .card.success .bar { background: linear-gradient(90deg, #6dffd0, #a5ffe2); }
+    .card.error .bar { background: linear-gradient(90deg, #ff9f9f, #ffd1d1); }
+
+    @keyframes rise {
+      from { transform: translateY(16px) scale(0.98); opacity: 0; }
+      to { transform: translateY(0) scale(1); opacity: 1; }
+    }
+
+    @keyframes shrink {
+      from { transform: scaleX(1); }
+      to { transform: scaleX(0); }
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <p class="hint-top">Verificación de cuenta</p>
+
+  <main class="stage">
+    <section id="resultCard" class="card">
+      <div class="status-row">
+        <div id="statusIcon" class="icon">•</div>
+        <p id="statusLabel" class="status">Verificando</p>
+      </div>
+      <h1 id="title">Procesando verificación...</h1>
+      <p id="message" class="message">Estamos validando tu enlace. Un momento por favor.</p>
+      <p id="redirectText" class="redirect"></p>
+      <div class="progress"><div class="bar"></div></div>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const status = (params.get("status") || "error").toLowerCase();
+    const title = params.get("title") || (status === "success" ? "Email verificado" : "Verificación fallida");
+    const message = params.get("message") || (status === "success"
+      ? "Tu cuenta fue verificada correctamente."
+      : "No pudimos verificar tu email. El enlace puede haber expirado o ya fue utilizado.");
+    const loginUrl = params.get("loginUrl") || "http://localhost:5500/#/login";
+
+    const statusLabel = document.getElementById("statusLabel");
+    const titleEl = document.getElementById("title");
+    const messageEl = document.getElementById("message");
+    const redirectText = document.getElementById("redirectText");
+    const resultCard = document.getElementById("resultCard");
+    const statusIcon = document.getElementById("statusIcon");
+
+    statusLabel.textContent = status === "success" ? "Verificación exitosa" : "Verificación fallida";
+    statusLabel.classList.add(status === "success" ? "success" : "error");
+    resultCard.classList.add(status === "success" ? "success" : "error");
+    statusIcon.textContent = status === "success" ? "✓" : "!";
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+
+    let seconds = 3;
+    const updateRedirect = () => {
+      redirectText.innerHTML = `Redirigiendo al login en <strong>${seconds}</strong> segundo(s). Si no ocurre, <a href="${encodeURI(loginUrl)}">haz clic aquí</a>.`;
+    };
+
+    updateRedirect();
+    const timer = setInterval(() => {
+      seconds -= 1;
+      if (seconds <= 0) {
+        clearInterval(timer);
+        window.location.href = loginUrl;
+        return;
+      }
+      updateRedirect();
+    }, 1000);
+  </script>
+</body>
+</html>

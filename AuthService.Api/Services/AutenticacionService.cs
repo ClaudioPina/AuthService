@@ -3,6 +3,7 @@ using AuthService.Api.Dtos.Auth;
 using AuthService.Api.Repositories;
 using AuthService.Api.Utils;
 using Microsoft.Extensions.Caching.Distributed;
+using System.Text.Json;
 
 namespace AuthService.Api.Services
 {
@@ -31,6 +32,10 @@ namespace AuthService.Api.Services
         private readonly AppDbContext _db;
         private readonly AuditoriaRepository _auditoriaRepo;
         private readonly IHibpService _hibp;
+        private const string PasswordChangeCachePrefix = "pwdchange:";
+        private const int PasswordChangeConfirmationMinutes = 30;
+
+        private sealed record PendingPasswordChange(long UserId, string NewPasswordHash);
 
         public AutenticacionService(
             UsuariosRepository usuariosRepo,
@@ -71,10 +76,17 @@ namespace AuthService.Api.Services
         public async Task<IResult> RegisterAsync(RegisterRequest request)
         {
             if (string.IsNullOrWhiteSpace(request.Email) ||
-                string.IsNullOrWhiteSpace(request.Password))
+                string.IsNullOrWhiteSpace(request.Password) ||
+                string.IsNullOrWhiteSpace(request.PasswordConfirmacion))
             {
                 _metrics.RecordRegistration("validation_error");
-                return Results.BadRequest(new { message = "El email y la contraseña son obligatorios." });
+                return Results.BadRequest(new { message = "El email, la contraseña y su confirmación son obligatorios." });
+            }
+
+            if (!string.Equals(request.Password, request.PasswordConfirmacion, StringComparison.Ordinal))
+            {
+                _metrics.RecordRegistration("validation_error");
+                return Results.BadRequest(new { message = "Las contraseñas no coinciden." });
             }
 
             if (!EsEmailValido(request.Email))
@@ -558,8 +570,14 @@ namespace AuthService.Api.Services
         public async Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, long idUsuario)
         {
             if (string.IsNullOrWhiteSpace(request.PasswordActual) ||
-                string.IsNullOrWhiteSpace(request.PasswordNueva))
-                return Results.BadRequest(new { message = "La contraseña actual y la nueva son obligatorias." });
+                string.IsNullOrWhiteSpace(request.PasswordNueva) ||
+                string.IsNullOrWhiteSpace(request.PasswordNuevaConfirmacion))
+            {
+                return Results.BadRequest(new { message = "La contraseña actual, la nueva y su confirmación son obligatorias." });
+            }
+
+            if (!string.Equals(request.PasswordNueva, request.PasswordNuevaConfirmacion, StringComparison.Ordinal))
+                return Results.BadRequest(new { message = "Las contraseñas nuevas no coinciden." });
 
             var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(idUsuario);
             if (usuario == null)
@@ -583,24 +601,83 @@ namespace AuthService.Api.Services
                 return Results.BadRequest(new { message = "Esta contraseña aparece en filtraciones de datos conocidas. Por favor elige una diferente." });
 
             var hashNuevo = PasswordHasher.HashPassword(request.PasswordNueva);
-            await _usuariosRepo.ActualizarPasswordAsync(usuario.IdUsuario, hashNuevo);
+            var token = TokenGenerator.GenerateToken(32);
+            var tokenHash = TokenGenerator.HashToken(token);
+            var expiraEn = DateTime.UtcNow.AddMinutes(PasswordChangeConfirmationMinutes);
+            var confirmationLink = $"{_config["App:BaseUrl"]}/auth/confirm-change-password/{token}";
 
-            // Invalida todas las sesiones por seguridad — obliga a hacer login de nuevo.
-            // Se obtienen primero los IDs para invalidar el cache antes que la BD.
-            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(usuario.IdUsuario);
-            foreach (var s in sesionesActivas)
-                await RemoveSesionCacheAsync(s.IdSesion);
-            await _sesionesRepo.InvalidarTodasPorUsuarioAsync(usuario.IdUsuario);
+            var payload = JsonSerializer.Serialize(new PendingPasswordChange(usuario.IdUsuario, hashNuevo));
+            await _cache.SetStringAsync(
+                BuildPasswordChangeCacheKey(tokenHash),
+                payload,
+                new DistributedCacheEntryOptions
+                {
+                    AbsoluteExpiration = expiraEn
+                });
 
-            // Notificar al usuario sobre el cambio de contraseña.
-            _ = _emailService.SendPasswordChangedNotificationAsync(usuario.Email)
-                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al enviar notificación de cambio de contraseña."),
+            await _emailService.SendPasswordChangeVerificationEmailAsync(usuario.Email, confirmationLink);
+
+            _logger.LogInformation("Solicitud de cambio de contraseña enviada para usuario {IdUsuario}", idUsuario);
+
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "SOLICITUD_CAMBIO_CONTRASENA", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de solicitud de cambio de contraseña."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
-            _logger.LogInformation("Contraseña cambiada para usuario {IdUsuario}", idUsuario);
+            if (_env.IsDevelopment())
+            {
+                return Results.Ok(new
+                {
+                    message = "Te enviamos un correo para confirmar el cambio de contraseña.",
+                    confirmar_cambio_url_dev = confirmationLink
+                });
+            }
 
-            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "CAMBIO_CONTRASENA", null, null)
-                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de cambio de contraseña."),
+            return Results.Ok(new { message = "Te enviamos un correo para confirmar el cambio de contraseña." });
+        }
+
+        public async Task<IResult> ConfirmPasswordChangeAsync(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return Results.BadRequest(new { message = "El token de confirmación es obligatorio." });
+
+            var tokenHash = TokenGenerator.HashToken(token);
+            var cached = await _cache.GetStringAsync(BuildPasswordChangeCacheKey(tokenHash));
+            if (string.IsNullOrWhiteSpace(cached))
+                return Results.BadRequest(new { message = "El token es inválido o ha expirado." });
+
+            PendingPasswordChange? pending;
+            try
+            {
+                pending = JsonSerializer.Deserialize<PendingPasswordChange>(cached);
+            }
+            catch
+            {
+                pending = null;
+            }
+
+            if (pending == null || pending.UserId <= 0 || string.IsNullOrWhiteSpace(pending.NewPasswordHash))
+                return Results.BadRequest(new { message = "No se pudo procesar la confirmación del cambio de contraseña." });
+
+            await _cache.RemoveAsync(BuildPasswordChangeCacheKey(tokenHash));
+            await _usuariosRepo.ActualizarPasswordAsync(pending.UserId, pending.NewPasswordHash);
+
+            var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(pending.UserId);
+            foreach (var s in sesionesActivas)
+                await RemoveSesionCacheAsync(s.IdSesion);
+            await _sesionesRepo.InvalidarTodasPorUsuarioAsync(pending.UserId);
+
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(pending.UserId);
+            if (usuario != null)
+            {
+                _ = _emailService.SendPasswordChangedNotificationAsync(usuario.Email)
+                    .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al enviar notificación de cambio de contraseña confirmado."),
+                        TaskContinuationOptions.OnlyOnFaulted);
+            }
+
+            _logger.LogInformation("Cambio de contraseña confirmado para usuario {IdUsuario}", pending.UserId);
+
+            _ = _auditoriaRepo.RegistrarAsync(pending.UserId, "CAMBIO_CONTRASENA_CONFIRMADO", null, null)
+                .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de confirmación de cambio de contraseña."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
             return Results.Ok(new { message = "Tu contraseña ha sido actualizada. Por seguridad, vuelve a iniciar sesión." });
@@ -801,6 +878,9 @@ namespace AuthService.Api.Services
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────────
+
+        private static string BuildPasswordChangeCacheKey(string tokenHash)
+            => $"{PasswordChangeCachePrefix}{tokenHash}";
 
         /// <summary>
         /// Elimina la entrada de cache de una sesión de forma segura.
