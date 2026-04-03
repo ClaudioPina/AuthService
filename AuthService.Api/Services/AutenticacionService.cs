@@ -30,6 +30,7 @@ namespace AuthService.Api.Services
         private readonly AuthMetrics _metrics;
         private readonly AppDbContext _db;
         private readonly AuditoriaRepository _auditoriaRepo;
+        private readonly IHibpService _hibp;
 
         public AutenticacionService(
             UsuariosRepository usuariosRepo,
@@ -45,7 +46,8 @@ namespace AuthService.Api.Services
             IDistributedCache cache,
             AuthMetrics metrics,
             AppDbContext db,
-            AuditoriaRepository auditoriaRepo)
+            AuditoriaRepository auditoriaRepo,
+            IHibpService hibp)
         {
             _usuariosRepo  = usuariosRepo;
             _sesionesRepo  = sesionesRepo;
@@ -61,6 +63,7 @@ namespace AuthService.Api.Services
             _metrics       = metrics;
             _db            = db;
             _auditoriaRepo = auditoriaRepo;
+            _hibp          = hibp;
         }
 
         // ── Registro ─────────────────────────────────────────────────────────────
@@ -85,6 +88,12 @@ namespace AuthService.Api.Services
             {
                 _metrics.RecordRegistration("validation_error");
                 return Results.BadRequest(new { message = error });
+            }
+
+            if (await _hibp.EsPasswordCompromisedAsync(request.Password))
+            {
+                _metrics.RecordRegistration("validation_error");
+                return Results.BadRequest(new { message = "Esta contraseña aparece en filtraciones de datos conocidas. Por favor elige una diferente." });
             }
 
             // Normalizar email: trim + lowercase para consistencia en BD.
@@ -282,6 +291,50 @@ namespace AuthService.Api.Services
             _logger.LogInformation("Email verificado para usuario {IdUsuario}", idUsuario);
 
             return Results.Ok(new { message = "Email verificado correctamente. Ya puedes iniciar sesión." });
+        }
+
+        // ── Resend verification ───────────────────────────────────────────────────
+
+        /// <summary>
+        /// Reenvía el email de verificación. Siempre responde con el mismo mensaje
+        /// para evitar enumerar si el email existe (mismo patrón que ForgotPassword).
+        /// </summary>
+        public async Task<IResult> ResendVerificationAsync(ResendVerificationRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.Email) || !EsEmailValido(request.Email))
+                return Results.Ok(new { message = "Si el email está registrado y sin verificar, recibirás un nuevo enlace en breve." });
+
+            var email   = request.Email.Trim().ToLowerInvariant();
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorEmailAsync(email);
+
+            // Respuesta idéntica si no existe o ya está verificado — previene enumeración.
+            if (usuario == null || usuario.EmailVerificado == 1)
+                return Results.Ok(new { message = "Si el email está registrado y sin verificar, recibirás un nuevo enlace en breve." });
+
+            // Invalidar tokens anteriores antes de generar uno nuevo.
+            await _verifRepo.InvalidarTokensAnterioresAsync(usuario.IdUsuario);
+
+            var token      = TokenGenerator.GenerateToken(32);
+            var tokenHash  = TokenGenerator.HashToken(token);
+            var expiraEn   = DateTime.UtcNow.AddHours(
+                _config.GetValue<int>("Tokens:EmailVerificationExpirationHours", 24));
+
+            await _verifRepo.CrearTokenVerificacionAsync(usuario.IdUsuario, tokenHash, expiraEn);
+
+            var baseUrl          = _config["App:BaseUrl"];
+            var verificationLink = $"{baseUrl}/auth/verify-email/{token}";
+
+            await _emailService.SendVerificationEmailAsync(email, verificationLink);
+            _logger.LogInformation("Email de verificación reenviado para usuario {IdUsuario}", usuario.IdUsuario);
+
+            if (_env.IsDevelopment())
+                return Results.Ok(new
+                {
+                    message              = "Si el email está registrado y sin verificar, recibirás un nuevo enlace en breve.",
+                    verificar_url_dev    = verificationLink
+                });
+
+            return Results.Ok(new { message = "Si el email está registrado y sin verificar, recibirás un nuevo enlace en breve." });
         }
 
         // ── Forgot password ───────────────────────────────────────────────────────
@@ -526,6 +579,9 @@ namespace AuthService.Api.Services
             if (!isValid)
                 return Results.BadRequest(new { message = error });
 
+            if (await _hibp.EsPasswordCompromisedAsync(request.PasswordNueva))
+                return Results.BadRequest(new { message = "Esta contraseña aparece en filtraciones de datos conocidas. Por favor elige una diferente." });
+
             var hashNuevo = PasswordHasher.HashPassword(request.PasswordNueva);
             await _usuariosRepo.ActualizarPasswordAsync(usuario.IdUsuario, hashNuevo);
 
@@ -717,6 +773,30 @@ namespace AuthService.Api.Services
                     refreshToken,
                     refreshTokenExpiresAt = refreshExpiraEn
                 }
+            });
+        }
+
+        // ── Perfil ────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Devuelve los datos públicos del usuario autenticado.
+        /// </summary>
+        public async Task<IResult> ObtenerPerfilAsync(long idUsuario)
+        {
+            var usuario = await _usuariosRepo.ObtenerUsuarioPorIdAsync(idUsuario);
+
+            if (usuario == null)
+                return Results.NotFound(new { message = "Usuario no encontrado." });
+
+            return Results.Ok(new PerfilUsuarioResponse
+            {
+                Id              = usuario.IdUsuario,
+                Email           = usuario.Email,
+                Nombre          = usuario.Nombre,
+                FotoUrl         = usuario.FotoUrl,
+                EmailVerificado = usuario.EmailVerificado == 1,
+                ProveedorLogin  = usuario.ProveedorLogin,
+                Creacion        = usuario.Creacion
             });
         }
 

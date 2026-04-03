@@ -3023,19 +3023,19 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\Claudio.Piña\\.nuget\\packages\\": {}
+    "C:\\Users\\Claudio\\.nuget\\packages\\": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\Claudio.Piña\\Documents\\Proyectos Personales\\AuthService\\AuthService.Api\\AuthService.Api.csproj",
+      "projectUniqueName": "C:\\Users\\Claudio\\Documents\\Proyectos\\authservice\\AuthService.Api\\AuthService.Api.csproj",
       "projectName": "AuthService.Api",
-      "projectPath": "C:\\Users\\Claudio.Piña\\Documents\\Proyectos Personales\\AuthService\\AuthService.Api\\AuthService.Api.csproj",
-      "packagesPath": "C:\\Users\\Claudio.Piña\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\Claudio.Piña\\Documents\\Proyectos Personales\\AuthService\\AuthService.Api\\obj\\",
+      "projectPath": "C:\\Users\\Claudio\\Documents\\Proyectos\\authservice\\AuthService.Api\\AuthService.Api.csproj",
+      "packagesPath": "C:\\Users\\Claudio\\.nuget\\packages\\",
+      "outputPath": "C:\\Users\\Claudio\\Documents\\Proyectos\\authservice\\AuthService.Api\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "C:\\Users\\Claudio.Piña\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        "C:\\Users\\Claudio\\AppData\\Roaming\\NuGet\\NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net8.0"

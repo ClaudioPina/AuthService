@@ -109,6 +109,16 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit  = 0
             }));
 
+    options.AddPolicy("resendverification-policy", ctx =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window      = TimeSpan.FromMinutes(1),
+                QueueLimit  = 0
+            }));
+
     // 429 Too Many Requests cuando se supera el límite
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 });
@@ -170,6 +180,13 @@ builder.Services.AddSingleton<JwtGenerator>();
 
 // Background service: limpia tokens y sesiones expirados cada hora.
 builder.Services.AddHostedService<CleanupExpiredTokensService>();
+
+// HIBP: HttpClient tipado con User-Agent requerido por la API pública
+builder.Services.AddHttpClient<IHibpService, HibpService>(client =>
+{
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("AuthService/1.0");
+    client.Timeout = TimeSpan.FromSeconds(3); // fail fast si HIBP no responde
+});
 
 // Resend SDK: requiere HttpClient y las opciones de API key
 builder.Services.AddOptions();

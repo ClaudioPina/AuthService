@@ -76,12 +76,19 @@ namespace AuthService.Tests.Integration
             builder.ConfigureServices(services =>
             {
                 // Reemplazar IEmailService con el fake para no enviar emails reales
-                var descriptor = services.SingleOrDefault(
+                var emailDescriptor = services.SingleOrDefault(
                     d => d.ServiceType == typeof(IEmailService));
-                if (descriptor != null) services.Remove(descriptor);
+                if (emailDescriptor != null) services.Remove(emailDescriptor);
 
                 // Singleton para que el mismo fake sea accesible desde el test
                 services.AddSingleton<IEmailService, FakeEmailService>();
+
+                // Reemplazar IHibpService con fake para evitar llamadas HTTP reales a HIBP.
+                // Sin esto, tests con contraseñas comunes fallarían si la API las detecta.
+                var hibpDescriptor = services.SingleOrDefault(
+                    d => d.ServiceType == typeof(IHibpService));
+                if (hibpDescriptor != null) services.Remove(hibpDescriptor);
+                services.AddSingleton<IHibpService, FakeHibpService>();
 
                 // Desactivar rate limiting en tests.
                 // AddPolicy lanza ArgumentException si el nombre ya existe, por eso no
@@ -94,9 +101,10 @@ namespace AuthService.Tests.Integration
 
                 services.Configure<RateLimiterOptions>(options =>
                 {
-                    options.AddPolicy("login-policy",          _ => RateLimitPartition.GetNoLimiter<string>("test"));
-                    options.AddPolicy("register-policy",       _ => RateLimitPartition.GetNoLimiter<string>("test"));
-                    options.AddPolicy("forgotpassword-policy", _ => RateLimitPartition.GetNoLimiter<string>("test"));
+                    options.AddPolicy("login-policy",                _ => RateLimitPartition.GetNoLimiter<string>("test"));
+                    options.AddPolicy("register-policy",             _ => RateLimitPartition.GetNoLimiter<string>("test"));
+                    options.AddPolicy("forgotpassword-policy",       _ => RateLimitPartition.GetNoLimiter<string>("test"));
+                    options.AddPolicy("resendverification-policy",   _ => RateLimitPartition.GetNoLimiter<string>("test"));
                 });
             });
         }

@@ -47,6 +47,9 @@ Está diseñado para ser consumido por aplicaciones web (SPA), móviles, otros m
 - Métricas de negocio expuestas en `/metrics` (formato Prometheus)
 - Health checks de dependencias expuestos en `GET /health` (PostgreSQL + Redis)
 - Audit log de eventos de seguridad en tabla `AUDITORIA`
+- Verificación de contraseñas comprometidas via HaveIBeenPwned (k-anonymity)
+- Reenvío de email de verificación para tokens expirados o no recibidos
+- Consulta de perfil del usuario autenticado (`GET /auth/me`)
 
 **Lo que AuthService NO hace:** no maneja lógica de negocio, no almacena datos de dominio, no gestiona permisos específicos de la aplicación.
 
@@ -149,6 +152,7 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 - **Email case-insensitive**: emails normalizados a lowercase; unicidad garantizada con índice parcial `LOWER(email)` en PostgreSQL
 - **Logout forzado al resetear contraseña**: `ResetPasswordAsync` invalida todas las sesiones activas además de cambiar la contraseña
 - **Audit log**: eventos de seguridad (login, cambio/reset de contraseña, logout-all, revocación de sesión) registrados en tabla `AUDITORIA` de forma asíncrona fire-and-forget
+- **HaveIBeenPwned**: contraseñas verificadas contra filtraciones conocidas en registro y cambio de contraseña usando k-anonymity — solo se envían los primeros 5 caracteres del hash SHA-1, nunca la contraseña completa. Fail open si HIBP no está disponible
 - **Docker non-root**: el contenedor corre con usuario `appuser` sin privilegios
 
 ---
@@ -212,6 +216,8 @@ AuthService/
 │   │   ├── IEmailService.cs
 │   │   ├── EmailService.cs                 # Resend SDK (producción)
 │   │   ├── SmtpEmailService.cs             # SMTP (desarrollo local)
+│   │   ├── IHibpService.cs
+│   │   ├── HibpService.cs                  # HaveIBeenPwned k-anonymity
 │   │   ├── CleanupExpiredTokensService.cs  # BackgroundService (limpieza cada 1h)
 │   │   └── AuthMetrics.cs                  # Contadores OpenTelemetry (/metrics)
 │   ├── Utils/
@@ -228,9 +234,13 @@ AuthService/
 │   │   ├── PasswordPolicyTests.cs
 │   │   └── TokenGeneratorTests.cs
 │   └── Integration/            # Tests de integración (requieren Docker)
+│       ├── AuthIntegrationCollection.cs   # Colección xUnit compartida
 │       ├── AuthWebAppFactory.cs
 │       ├── FakeEmailService.cs
-│       └── AuthIntegrationTests.cs
+│       ├── FakeHibpService.cs
+│       ├── AuthIntegrationTests.cs
+│       ├── HealthCheckTests.cs
+│       └── LockoutConcurrencyTests.cs
 │
 ├── appsettings.example.json    # Plantilla de configuración (sin secretos)
 ├── script_DB.sql               # Esquema de base de datos
@@ -242,7 +252,7 @@ AuthService/
 
 ## 🧪 Tests
 
-El proyecto tiene 41 tests en total:
+El proyecto tiene 47 tests en total:
 
 | Tipo | Archivo | Tests |
 |------|---------|-------|
@@ -251,8 +261,10 @@ El proyecto tiene 41 tests en total:
 | Unit | `TokenGeneratorTests.cs` | 5 |
 | Unit | `JwtGeneratorTests.cs` | 3 |
 | Integration | `AuthIntegrationTests.cs` | 22 |
+| Integration | `HealthCheckTests.cs` | 3 |
+| Integration | `LockoutConcurrencyTests.cs` | 3 |
 
-Los **integration tests** levantan la aplicación real con una instancia de PostgreSQL en Docker (via Testcontainers) y reemplazan el `IEmailService` con un fake en memoria para capturar los emails enviados.
+Los **integration tests** levantan la aplicación real con una instancia de PostgreSQL en Docker (via Testcontainers). Reemplazan `IEmailService` e `IHibpService` con fakes para evitar llamadas externas. Todas las clases comparten la misma instancia de la factory via `[Collection("AuthIntegration")]`.
 
 ```bash
 # Solo unitarios (rápidos, sin Docker)
@@ -373,11 +385,13 @@ docker run -p 8080:8080 \
 | POST | `/auth/forgot-password` | Solicitar reset de contraseña | 3 req/min por IP |
 | POST | `/auth/reset-password` | Restablecer contraseña con token | — |
 | POST | `/auth/refresh-token` | Rotar tokens | — |
+| POST | `/auth/resend-verification` | Reenviar email de verificación | 3 req/min por IP |
 
 ### Requieren JWT
 
 | Método | Ruta | Descripción |
 |--------|------|-------------|
+| GET | `/auth/me` | Perfil del usuario autenticado |
 | POST | `/auth/change-password` | Cambiar contraseña (invalida todas las sesiones) |
 | POST | `/auth/logout` | Cerrar sesión actual |
 | POST | `/auth/logout-all` | Cerrar todas las sesiones |

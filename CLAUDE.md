@@ -55,7 +55,7 @@ AuthEndpoints.cs (rutas + extracción de claims)
 | `Models/` | Entidades: `Usuario`, `SesionUsuario`, `ResetPasswordToken`, `IntentoLogin` |
 | `DTOs/Auth/` | DTOs de request para cada endpoint |
 | `Repositories/` | Acceso a datos (queries SQL directas con Npgsql): `UsuariosRepository`, `SesionesUsuariosRepository`, `VerificacionEmailRepository`, `ResetPasswordRepository`, `IntentosLoginRepository`, `AuditoriaRepository` |
-| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `CleanupExpiredTokensService` (BackgroundService), `AuthMetrics` (contadores OpenTelemetry) |
+| `Services/` | `IAutenticacionService` + `AutenticacionService` (lógica de negocio), `IEmailService` + `EmailService` (Resend) + `SmtpEmailService` (SMTP local), `IHibpService` + `HibpService` (HaveIBeenPwned k-anonymity), `CleanupExpiredTokensService` (BackgroundService), `AuthMetrics` (contadores OpenTelemetry) |
 | `Endpoints/` | `AuthEndpoints.cs` — extension method `MapAuthEndpoints()` con las 12 rutas |
 | `Configuration/` | `SwaggerConfig.cs` — extension methods para Swagger con JWT Bearer |
 | `Middlewares/` | `ValidarSesionMiddleware` — valida sesión activa en DB |
@@ -115,11 +115,15 @@ El proyecto `AuthService.Tests` tiene dos categorías:
 - `JwtGeneratorTests.cs` — 3 tests sobre generación y validación de JWTs
 
 **Integration** (`AuthService.Tests/Integration/`)
-- `AuthWebAppFactory.cs` — levanta la app real con PostgreSQL en Docker (Testcontainers) y reemplaza `IEmailService` con `FakeEmailService`
-- `FakeEmailService.cs` — implementación fake con `ConcurrentBag` para capturar emails enviados en tests
+- `AuthWebAppFactory.cs` — levanta la app real con PostgreSQL en Docker (Testcontainers). Reemplaza `IEmailService` con `FakeEmailService` e `IHibpService` con `FakeHibpService`
+- `FakeEmailService.cs` — fake de email con `ConcurrentBag` para capturar emails enviados en tests
+- `FakeHibpService.cs` — fake de HIBP que siempre retorna `false` (no comprometida) para evitar llamadas HTTP reales
+- `AuthIntegrationCollection.cs` — define la colección `"AuthIntegration"` con `ICollectionFixture<AuthWebAppFactory>`; garantiza que solo se crea UNA instancia de la factory compartida entre todas las clases de tests
 - `AuthIntegrationTests.cs` — 22 tests de extremo a extremo sobre todos los endpoints
+- `HealthCheckTests.cs` — 3 tests sobre `GET /health` (PostgreSQL disponible, Redis no configurado, PostgreSQL caído)
+- `LockoutConcurrencyTests.cs` — 3 tests de concurrencia sobre el UPSERT de `INTENTOS_LOGIN`
 
-Los integration tests requieren Docker corriendo. Usan `IClassFixture<AuthWebAppFactory>` (una sola instancia del contenedor por clase) e `IAsyncLifetime` para setup/teardown asíncrono.
+Los integration tests requieren Docker corriendo. Usan `[Collection("AuthIntegration")]` (colección compartida) e `IAsyncLifetime` para setup/teardown asíncrono.
 
 Para que `WebApplicationFactory` funcione, `Program.cs` termina con `public partial class Program { }`.
 
@@ -134,6 +138,8 @@ Para que `WebApplicationFactory` funcione, `Program.cs` termina con `public part
 | POST | `/auth/reset-password` | Público | — |
 | POST | `/auth/refresh-token` | Público | — |
 | POST | `/auth/google` | Público | 10 req/min por IP |
+| POST | `/auth/resend-verification` | Público | 3 req/min por IP |
+| GET | `/auth/me` | JWT requerido | — |
 | POST | `/auth/change-password` | JWT requerido | — |
 | POST | `/auth/logout` | JWT requerido | — |
 | POST | `/auth/logout-all` | JWT requerido | — |
@@ -159,6 +165,7 @@ El rate limiting es por IP (`RateLimitPartition.GetFixedWindowLimiter`), no glob
 - **Correlation ID**: header `X-Correlation-ID` propagado en todas las respuestas para trazabilidad
 - **Email case-insensitive**: emails normalizados a lowercase antes de guardar/buscar; unicidad garantizada con índice `LOWER(email)`
 - **Audit log**: eventos de seguridad registrados en tabla `AUDITORIA` de forma fire-and-forget (no bloquea el flujo principal si falla)
+- **HaveIBeenPwned**: contraseñas verificadas contra filtraciones conocidas en `register` y `change-password` usando k-anonymity (SHA-1 prefix, nunca se envía la contraseña completa). Fail open: si HIBP no responde, no bloquea la operación.
 
 ## Configuración esperada (appsettings.json)
 
@@ -247,3 +254,6 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 - Health checks en `GET /health`: `PostgresHealthCheck` verifica la conexión con una query `SELECT 1`; `RedisHealthCheck` verifica con `PING`. Retorna JSON con estado de cada dependency.
 - Las llamadas a `AuditoriaRepository.RegistrarAsync` son fire-and-forget en `AutenticacionService`. Si fallan, se loguea un warning (`LogWarning`) — no afectan el flujo principal.
 - El startup valida configuración crítica al arranque (Jwt:Key, ConnectionStrings:PostgresDb, etc.) y lanza `InvalidOperationException` si falta alguna. Fail-fast intencional.
+- `HibpService` usa `HttpClient` tipado con timeout de 3 segundos y `User-Agent: AuthService/1.0`. Si la API no responde, `EsPasswordCompromisedAsync` retorna `false` (fail open) y loguea un `LogWarning`. En tests se usa `FakeHibpService` para evitar llamadas HTTP reales.
+- `ResendVerificationAsync` siempre retorna el mismo mensaje independientemente de si el email existe o ya está verificado, evitando enumeración de usuarios. En Development incluye `verificar_url_dev` en la respuesta.
+- `GET /auth/me` retorna `id`, `email`, `nombre`, `foto_url`, `email_verificado`, `proveedor_login` y `creacion`. No incluye `password_hash` ni `google_sub`.

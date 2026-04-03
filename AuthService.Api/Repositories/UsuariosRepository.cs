@@ -91,11 +91,13 @@ namespace AuthService.Api.Repositories
 
         /// <summary>
         /// Busca un usuario activo por su ID numérico.
+        /// Retorna todos los campos relevantes, incluyendo foto_url, proveedor_login y creacion.
         /// </summary>
         public async Task<Usuario?> ObtenerUsuarioPorIdAsync(long idUsuario)
         {
             const string sql = @"
-                SELECT id_usuario, email, nombre, password_hash, email_verificado, estado
+                SELECT id_usuario, email, nombre, password_hash, email_verificado, estado,
+                       foto_url, proveedor_login, creacion
                 FROM USUARIOS
                 WHERE id_usuario = @p_id AND estado = 1";
 
@@ -113,7 +115,10 @@ namespace AuthService.Api.Repositories
                 Nombre          = reader.IsDBNull(2) ? null : reader.GetString(2),
                 PasswordHash    = reader.IsDBNull(3) ? null : reader.GetString(3),
                 EmailVerificado = reader.GetInt32(4),
-                Estado          = reader.GetInt32(5)
+                Estado          = reader.GetInt32(5),
+                FotoUrl         = reader.IsDBNull(6) ? null : reader.GetString(6),
+                ProveedorLogin  = reader.IsDBNull(7) ? null : reader.GetString(7),
+                Creacion        = reader.GetDateTime(8)
             };
         }
 

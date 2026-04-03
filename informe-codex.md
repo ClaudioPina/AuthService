@@ -263,6 +263,59 @@ Varios flujos críticos de seguridad no tenían cobertura de tests.
 
 ---
 
+### Bloque 5 — Funcionalidades adicionales
+
+#### P3 — Endpoint `/auth/me`
+
+**Solución aplicada:**
+- `Repositories/UsuariosRepository.cs` — extendida query de `ObtenerUsuarioPorIdAsync` para incluir `foto_url`, `proveedor_login`, `creacion`.
+- `DTOs/Auth/PerfilUsuarioResponse.cs` (nuevo) — DTO con `id`, `email`, `nombre`, `foto_url`, `email_verificado`, `proveedor_login`, `creacion`.
+- `Services/IAutenticacionService.cs` + `AutenticacionService.cs` — nuevo método `ObtenerPerfilAsync`.
+- `Endpoints/AuthEndpoints.cs` — `GET /auth/me` con `RequireAuthorization()`.
+
+---
+
+#### P2 — HaveIBeenPwned
+
+**Solución aplicada:**
+- `Services/IHibpService.cs` + `HibpService.cs` (nuevos) — implementación k-anonymity con SHA-1 prefix. Timeout 3s, fail open si HIBP no responde.
+- `Program.cs` — `AddHttpClient<IHibpService, HibpService>` con `User-Agent: AuthService/1.0`.
+- `Services/AutenticacionService.cs` — check integrado en `RegisterAsync` y `ChangePasswordAsync` después de `PasswordPolicy.Validate`.
+- `Tests/Integration/FakeHibpService.cs` (nuevo) — siempre retorna `false`. Reemplaza `HibpService` real en `AuthWebAppFactory`.
+
+---
+
+#### P5 — Endpoint de reenvío de verificación de email
+
+**Solución aplicada:**
+- `Repositories/VerificacionEmailRepository.cs` — nuevo método `InvalidarTokensAnterioresAsync`.
+- `DTOs/Auth/ResendVerificationRequest.cs` (nuevo) — DTO con `Email`.
+- `Services/IAutenticacionService.cs` + `AutenticacionService.cs` — nuevo método `ResendVerificationAsync`. Respuesta idéntica para evitar enumeración de usuarios.
+- `Program.cs` — política de rate limit `resendverification-policy` (3 req/min).
+- `Endpoints/AuthEndpoints.cs` — `POST /auth/resend-verification`.
+
+---
+
+#### P7 — Tests de health checks con dependencias caídas
+
+**Solución aplicada:**
+- `Tests/Integration/HealthCheckTests.cs` (nuevo) — 3 tests: PostgreSQL disponible → Healthy, Redis no configurado → Healthy con nota, PostgreSQL caído → test directo de `PostgresHealthCheck` con `AppDbContext` de conexión inválida (sin factory extra).
+- `Tests/Integration/AuthIntegrationCollection.cs` (nuevo) — colección xUnit compartida. Resuelve el error "Serilog logger already frozen" que ocurre cuando múltiples clases usan `IClassFixture<AuthWebAppFactory>` por separado.
+
+---
+
+#### P6 — Tests de concurrencia para lockout
+
+**Solución aplicada:**
+- `Tests/Integration/LockoutConcurrencyTests.cs` (nuevo) — 3 tests con `Task.WhenAll`:
+  1. `ConcurrentFailedLogins_ShouldTriggerLockout` — N intentos concurrentes activan el bloqueo.
+  2. `ConcurrentFailedLogins_ShouldNotCreateDuplicateRows` — verifica 1 sola fila en `INTENTOS_LOGIN` vía query directa.
+  3. `ConcurrentFailedLogins_CounterShouldBeAccurate` — contador exactamente igual a N intentos registrados.
+
+**Total de tests:** 47 (19 unitarios + 28 de integración). Todos pasan.
+
+---
+
 ## Falta por implementar
 
 ### Baja prioridad / nice to have
@@ -280,26 +333,6 @@ Lo que requeriría:
 
 ---
 
-#### P2 — HaveIBeenPwned
-Al registrarse o cambiar contraseña, verificar si la contraseña aparece en filtraciones conocidas.
-
-Lo que requeriría:
-- Llamada a la API pública de HIBP con k-anonymity (SHA-1 prefix, nunca se envía la contraseña completa).
-- Integrar en `PasswordPolicy.Validate` o en el servicio antes de persistir.
-- Manejo de timeout/fallo graceful: si HIBP no responde, no bloquear el registro.
-
----
-
-#### P3 — Endpoint `/auth/me`
-Devuelve datos actualizados del usuario autenticado.
-
-Lo que requeriría:
-- `GET /auth/me` con JWT requerido.
-- Query a `USUARIOS` por `id_usuario` del claim.
-- Útil para que el frontend no tenga que parsear el JWT para obtener nombre, foto, email verificado.
-
----
-
 #### P4 — API versioning `/v1/`
 Rutas `/v1/auth/*` para compatibilidad futura cuando haya clientes externos.
 
@@ -311,30 +344,3 @@ Lo que requeriría:
 
 ---
 
-#### P5 — Endpoint de reenvío de verificación de email
-Si el email de verificación expira o no llega, el usuario no tiene forma de solicitar uno nuevo.
-
-Lo que requeriría:
-- `POST /auth/resend-verification` (público, con rate limiting).
-- Buscar usuario por email, verificar que `email_verificado = 0`.
-- Invalidar tokens anteriores, generar uno nuevo y enviarlo.
-
----
-
-#### P6 — Tests de concurrencia para lockout
-El lockout funciona correctamente en un solo hilo, pero bajo carga concurrente
-podría haber race conditions en el UPSERT de `INTENTOS_LOGIN`.
-
-Lo que requeriría:
-- Test que lanza N requests simultáneos con `Task.WhenAll`.
-- Verificar que el contador final es exacto y no hay filas duplicadas en BD.
-- Probablemente requiere ajuste de nivel de aislamiento en la transacción del UPSERT.
-
----
-
-#### P7 — Tests de health checks con dependencias caídas
-Los health checks implementados no tienen cobertura de tests para el camino de fallo.
-
-Lo que requeriría:
-- Test que levanta la app sin PostgreSQL disponible y verifica que `/health` retorna `Unhealthy`.
-- Test que levanta la app sin Redis y verifica que el check de Redis retorna el mensaje de "no configurado".

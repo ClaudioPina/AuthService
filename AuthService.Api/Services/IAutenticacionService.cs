@@ -21,5 +21,7 @@ namespace AuthService.Api.Services
         Task<IResult> GetSessionsAsync(long idUsuario);
         Task<IResult> RevokeSessionAsync(long idSesion, long idUsuario);
         Task<IResult> GoogleLoginAsync(string idToken, string? userAgent, string? ip);
+        Task<IResult> ObtenerPerfilAsync(long idUsuario);
+        Task<IResult> ResendVerificationAsync(ResendVerificationRequest request);
     }
 }

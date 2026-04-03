@@ -13,7 +13,8 @@ namespace AuthService.Tests.Integration
     /// los tests de esta clase (más eficiente que recrearla por test).
     /// PREREQUISITO: Docker debe estar corriendo.
     /// </summary>
-    public class AuthIntegrationTests : IClassFixture<AuthWebAppFactory>
+    [Collection("AuthIntegration")]
+    public class AuthIntegrationTests
     {
         private readonly HttpClient _client;
         private readonly AuthWebAppFactory _factory;

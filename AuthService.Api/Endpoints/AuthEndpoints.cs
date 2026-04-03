@@ -55,6 +55,12 @@ namespace AuthService.Api.Endpoints
                 .WithName("ResetPassword")
                 .WithOpenApi();
 
+            auth.MapPost("/resend-verification", async (ResendVerificationRequest req, IAutenticacionService svc) =>
+                await svc.ResendVerificationAsync(req))
+                .WithName("ResendVerification")
+                .WithOpenApi()
+                .RequireRateLimiting("resendverification-policy");
+
             auth.MapPost("/refresh-token", async (
                 RefreshTokenRequest req,
                 IAutenticacionService svc,
@@ -110,6 +116,12 @@ namespace AuthService.Api.Endpoints
                 HttpContext ctx) =>
                 await svc.RevokeSessionAsync(idSesion, GetUserId(ctx)))
                 .RequireAuthorization()
+                .WithOpenApi();
+
+            auth.MapGet("/me", async (IAutenticacionService svc, HttpContext ctx) =>
+                await svc.ObtenerPerfilAsync(GetUserId(ctx)))
+                .RequireAuthorization()
+                .WithName("GetProfile")
                 .WithOpenApi();
 
             return app;

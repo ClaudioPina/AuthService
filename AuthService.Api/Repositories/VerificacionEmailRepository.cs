@@ -72,6 +72,22 @@ namespace AuthService.Api.Repositories
             await cmd.ExecuteNonQueryAsync();
         }
 
+        /// <summary>
+        /// Invalida todos los tokens de verificación activos para un usuario.
+        /// Se llama antes de generar uno nuevo al reenviar el email.
+        /// </summary>
+        public async Task InvalidarTokensAnterioresAsync(long idUsuario)
+        {
+            const string sql = @"
+                UPDATE VERIFICACION_EMAIL SET estado = 0
+                WHERE id_usuario = @p_id AND estado = 1";
+
+            using var conn = await _db.GetOpenConnectionAsync();
+            using var cmd  = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue("p_id", idUsuario);
+            await cmd.ExecuteNonQueryAsync();
+        }
+
         // Desactivar tokens vencidos (usado por el servicio de limpieza periódica)
         public async Task<int> InvalidarTokensExpiradosAsync()
         {
