@@ -36,7 +36,8 @@ namespace AuthService.Tests.Integration
             {
                 email,
                 nombre   = "Test User",
-                password
+                password,
+                passwordConfirmacion = password
             });
             response.StatusCode.Should().Be(HttpStatusCode.Created);
 
@@ -93,7 +94,8 @@ namespace AuthService.Tests.Integration
             {
                 email    = "new_user@example.com",
                 nombre   = "New User",
-                password = "TestPass1!"
+                password = "TestPass1!",
+                passwordConfirmacion = "TestPass1!"
             });
 
             response.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -107,7 +109,8 @@ namespace AuthService.Tests.Integration
             var response = await _client.PostAsJsonAsync("/auth/register", new
             {
                 email    = "dup@example.com",
-                password = "TestPass1!"
+                password = "TestPass1!",
+                passwordConfirmacion = "TestPass1!"
             });
 
             response.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -119,7 +122,8 @@ namespace AuthService.Tests.Integration
             var response = await _client.PostAsJsonAsync("/auth/register", new
             {
                 email    = "weak@example.com",
-                password = "password" // sin mayúscula ni símbolo
+                password = "password", // sin mayúscula ni símbolo
+                passwordConfirmacion = "password"
             });
 
             response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
@@ -388,9 +392,17 @@ namespace AuthService.Tests.Integration
             var changeResponse = await client1.PostAsJsonAsync("/auth/change-password", new
             {
                 passwordActual = "TestPass1!",
-                passwordNueva  = "NuevoPass1!"
+                passwordNueva  = "NuevoPass1!",
+                passwordNuevaConfirmacion = "NuevoPass1!"
             });
             changeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var fake = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
+            var confirmEntry = fake!.PasswordChangeVerificationEmails.First(e => e.To == "changepwd_sessions@example.com");
+            var confirmToken = confirmEntry.Link.Split("/").Last();
+
+            var confirmResponse = await _client.GetAsync($"/auth/confirm-change-password/{confirmToken}");
+            confirmResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
             // La segunda sesión ya no debe funcionar — ValidarSesionMiddleware la rechaza
             using var client2 = _factory.CreateClient();
