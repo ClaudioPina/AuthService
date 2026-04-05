@@ -593,15 +593,15 @@ namespace AuthService.Tests.Integration
             var firstLink = await RegisterAndGetVerificationLinkAsync("resend_verify@example.com");
             var firstToken = firstLink.Split("/").Last();
 
-            // Pedir reenvío — genera un token nuevo
-            await _client.PostAsJsonAsync("/auth/resend-verification",
+            // Pedir reenvío — genera un token nuevo.
+            // Usamos verificar_url_dev del body (modo Development) en lugar de FakeEmailService,
+            // porque ConcurrentBag no garantiza orden de inserción y .Last() puede devolver
+            // el primer email (registro) en vez del segundo (reenvío).
+            var resendResponse = await _client.PostAsJsonAsync("/auth/resend-verification",
                 new { email = "resend_verify@example.com" });
 
-            var fake       = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
-            var lastEmail  = fake!.VerificationEmails
-                .Where(e => e.To == "resend_verify@example.com")
-                .Last();
-            var newToken = lastEmail.Link.Split("/").Last();
+            var resendBody = await resendResponse.Content.ReadFromJsonAsync<JsonElement>();
+            var newToken   = resendBody.GetProperty("verificar_url_dev").GetString()!.Split("/").Last();
 
             // El token anterior ya no debe funcionar
             var oldResponse = await _client.GetAsync($"/auth/verify-email/{firstToken}");

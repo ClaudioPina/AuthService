@@ -779,6 +779,14 @@ namespace AuthService.Api.Services
                 _logger.LogWarning("ID Token de Google inválido: {Error}", ex.Message);
                 return Results.BadRequest(new { message = "El token de Google no es válido o ha expirado." });
             }
+            catch (Exception ex)
+            {
+                // ValidateAsync puede lanzar JsonException, FormatException u otros tipos
+                // si el token está completamente malformado (no solo inválido).
+                // Cualquier fallo de validación debe resultar en 400, no en 500.
+                _logger.LogWarning("Error inesperado al validar token de Google: {Error}", ex.Message);
+                return Results.BadRequest(new { message = "El token de Google no es válido o ha expirado." });
+            }
 
             var googleSub = payload.Subject;
             var email     = payload.Email;
