@@ -48,19 +48,9 @@ namespace AuthService.Api.Models
         public int EmailVerificado { get; set; }
 
         /// <summary>
-        /// Campo legado de auditoría/propiedad del esquema actual.
-        /// </summary>
-        public int Propietario { get; set; }
-
-        /// <summary>
         /// Fecha de creación de la cuenta.
         /// </summary>
         public DateTime Creacion { get; set; }
-
-        /// <summary>
-        /// Campo legado de auditoría del esquema actual.
-        /// </summary>
-        public int? UsuarioAud { get; set; }
 
         /// <summary>
         /// Fecha de última actualización (null si nunca se modificó).

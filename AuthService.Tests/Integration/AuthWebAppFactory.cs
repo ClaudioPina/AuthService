@@ -28,7 +28,20 @@ namespace AuthService.Tests.Integration
         /// </summary>
         public async Task InitializeAsync()
         {
-            await _postgres.StartAsync();
+            try
+            {
+                await _postgres.StartAsync();
+            }
+            catch (Exception ex)
+            {
+                // Envolver la excepción críptica de Testcontainers con un mensaje accionable.
+                // La causa más común es que Docker Desktop no esté corriendo.
+                throw new InvalidOperationException(
+                    "No se pudo iniciar el contenedor PostgreSQL para los tests de integración. " +
+                    "Asegúrate de que Docker Desktop esté corriendo e inténtalo de nuevo. " +
+                    $"Causa original: {ex.Message}", ex);
+            }
+
             await ApplySchemaAsync();
         }
 

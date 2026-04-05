@@ -85,7 +85,8 @@
       "Bash(ls:*)",
       "Bash(git check-ignore:*)",
       "Bash(powershell.exe -Command \"Start-ScheduledTask -TaskPath '\\\\ClaudeCode\\\\' -TaskName 'ClaudeMem Worker'\")",
-      "Bash(powershell.exe:*)"
+      "Bash(powershell.exe:*)",
+      "Bash(grep:*)"
     ]
   }
 }

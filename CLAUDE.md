@@ -119,7 +119,7 @@ El proyecto `AuthService.Tests` tiene dos categorías:
 - `FakeEmailService.cs` — fake de email con `ConcurrentBag` para capturar emails enviados en tests
 - `FakeHibpService.cs` — fake de HIBP que siempre retorna `false` (no comprometida) para evitar llamadas HTTP reales
 - `AuthIntegrationCollection.cs` — define la colección `"AuthIntegration"` con `ICollectionFixture<AuthWebAppFactory>`; garantiza que solo se crea UNA instancia de la factory compartida entre todas las clases de tests
-- `AuthIntegrationTests.cs` — 22 tests de extremo a extremo sobre todos los endpoints
+- `AuthIntegrationTests.cs` — 33 tests de extremo a extremo sobre todos los endpoints
 - `HealthCheckTests.cs` — 3 tests sobre `GET /health` (PostgreSQL disponible, Redis no configurado, PostgreSQL caído)
 - `LockoutConcurrencyTests.cs` — 3 tests de concurrencia sobre el UPSERT de `INTENTOS_LOGIN`
 
@@ -157,7 +157,7 @@ El rate limiting es por IP (`RateLimitPartition.GetFixedWindowLimiter`), no glob
 - **Logout forzado al cambiar contraseña**: `ChangePasswordAsync` invalida TODAS las sesiones
 - **Logout forzado al resetear contraseña**: `ResetPasswordAsync` también invalida todas las sesiones activas
 - **Notificaciones de seguridad**: emails fire-and-forget al detectar nuevo login o cambio de contraseña
-- **Prevención de enumeración de usuarios**: `ForgotPasswordAsync` siempre retorna la misma respuesta
+- **Prevención de enumeración de usuarios**: todos los caminos de fallo de login (usuario no existe, cuenta Google-only sin password, password incorrecto) retornan exactamente el mismo mensaje. `ForgotPasswordAsync` y `ResendVerificationAsync` también retornan siempre la misma respuesta
 - **Tokens hasheados**: refresh tokens y tokens de email/reset se almacenan como SHA-256, nunca en texto plano
 - **Docker no-root**: el contenedor corre con usuario `appuser` sin privilegios
 - **CORS configurable**: en Development acepta cualquier origen; en producción lee `Cors:AllowedOrigins`
@@ -258,4 +258,6 @@ El proyecto está desplegado en **Fly.io** (`fly.toml`, región `gru`, puerto 80
 - `HibpService` usa `HttpClient` tipado con timeout de 3 segundos y `User-Agent: AuthService/1.0`. Si la API no responde, `EsPasswordCompromisedAsync` retorna `false` (fail open) y loguea un `LogWarning`. En tests se usa `FakeHibpService` para evitar llamadas HTTP reales.
 - `ResendVerificationAsync` siempre retorna el mismo mensaje independientemente de si el email existe o ya está verificado, evitando enumeración de usuarios. En Development incluye `verificar_url_dev` en la respuesta.
 - `GET /auth/me` retorna `id`, `email`, `nombre`, `foto_url`, `email_verificado`, `proveedor_login` y `creacion`. No incluye `password_hash` ni `google_sub`.
+- `POST /auth/reset-password` requiere los campos `token`, `newPassword` y `newPasswordConfirmacion`. El servidor valida que ambas contraseñas coincidan antes de procesar el reset.
+- `GoogleLoginAsync` captura cualquier excepción de `GoogleJsonWebSignature.ValidateAsync` (no solo `InvalidJwtException`) y retorna 400 — tokens completamente malformados lanzaban `JsonException`/`FormatException` que no era `InvalidJwtException`.
 - `POST /auth/change-password` inicia un flujo de confirmación por email: genera un token (TTL 30 min), lo persiste en `RESET_PASSWORD` con `tipo = 'change_confirm'` y guarda el BCrypt hash pre-computado de la nueva contraseña en `nuevo_password_hash`. `GET /auth/confirm-change-password/{token}` aplica el cambio y revoca todas las sesiones. El token de confirmación NO usa cache distribuida — es robusto frente a reinicios y despliegues multi-instancia.

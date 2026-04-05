@@ -193,11 +193,12 @@ namespace AuthService.Api.Services
             }
 
             // Cuenta creada exclusivamente con Google — no tiene password local.
-            // Retornar un error específico en lugar de lanzar una excepción al comparar con null.
+            // Usar el mismo mensaje genérico que los otros casos de fallo para no revelar
+            // que la cuenta existe ni que está vinculada a Google (previene enumeración).
             if (usuario.PasswordHash == null)
             {
                 _metrics.RecordLogin("invalid_credentials");
-                return Results.BadRequest(new { message = "El email o la contraseña son incorrectos." });
+                return Results.BadRequest(new { message = credencialesInvalidas });
             }
 
             if (!PasswordHasher.VerifyPassword(request.Password, usuario.PasswordHash))

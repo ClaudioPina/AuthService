@@ -142,7 +142,7 @@ Esto permite invalidar JWTs sin esperar a que expiren (logout, cambio de contras
 - **Account lockout**: bloqueo temporal configurable tras N intentos fallidos (default: 5 intentos, 15 min)
 - **Logout forzado al cambiar contraseña**: invalida todas las sesiones activas
 - **Notificaciones de seguridad**: email al detectar nuevo login desde IP nueva o cambio de contraseña
-- **Prevención de enumeración de usuarios**: `forgot-password` siempre retorna la misma respuesta
+- **Prevención de enumeración de usuarios**: todos los caminos de fallo de login (usuario inexistente, cuenta Google-only, password incorrecto) retornan el mismo mensaje genérico. `forgot-password` y `resend-verification` también tienen respuesta uniforme
 - **Rate limiting por IP**: límites separados para register, login, google y forgot-password
 - **Google OAuth**: validación de ID Tokens server-side vía `Google.Apis.Auth` — no se confía en datos del cliente
 - **CORS configurable**: permisivo en Development, restringido en producción
@@ -196,7 +196,7 @@ AuthService/
 │   │   └── AppDbContext.cs     # Conexión con Polly retry
 │   ├── DTOs/Auth/              # DTOs de request por endpoint
 │   ├── Endpoints/
-│   │   └── AuthEndpoints.cs    # Definición de las 12 rutas
+│   │   └── AuthEndpoints.cs    # Definición de las 15 rutas
 │   ├── Middlewares/
 │   │   └── ValidarSesionMiddleware.cs
 │   ├── Models/                 # Entidades (Usuario, SesionUsuario, IntentoLogin, etc.)
@@ -252,7 +252,7 @@ AuthService/
 
 ## 🧪 Tests
 
-El proyecto tiene 47 tests en total:
+El proyecto tiene 58 tests en total:
 
 | Tipo | Archivo | Tests |
 |------|---------|-------|
@@ -260,7 +260,7 @@ El proyecto tiene 47 tests en total:
 | Unit | `PasswordHasherTests.cs` | 4 |
 | Unit | `TokenGeneratorTests.cs` | 5 |
 | Unit | `JwtGeneratorTests.cs` | 3 |
-| Integration | `AuthIntegrationTests.cs` | 22 |
+| Integration | `AuthIntegrationTests.cs` | 33 |
 | Integration | `HealthCheckTests.cs` | 3 |
 | Integration | `LockoutConcurrencyTests.cs` | 3 |
 
@@ -391,6 +391,7 @@ docker run -p 8080:8080 \
 | POST | `/auth/reset-password` | Restablecer contraseña con token | — |
 | POST | `/auth/refresh-token` | Rotar tokens | — |
 | POST | `/auth/resend-verification` | Reenviar email de verificación | 3 req/min por IP |
+| GET | `/auth/confirm-change-password/{token}` | Confirmar cambio de contraseña (invalida todas las sesiones) | — |
 
 ### Requieren JWT
 
@@ -398,7 +399,6 @@ docker run -p 8080:8080 \
 |--------|------|-------------|
 | GET | `/auth/me` | Perfil del usuario autenticado |
 | POST | `/auth/change-password` | Solicitar cambio de contraseña (envía email de confirmación) |
-| GET | `/auth/confirm-change-password/{token}` | Confirmar cambio de contraseña (invalida todas las sesiones) |
 | POST | `/auth/logout` | Cerrar sesión actual |
 | POST | `/auth/logout-all` | Cerrar todas las sesiones |
 | GET | `/auth/sessions` | Listar sesiones activas |

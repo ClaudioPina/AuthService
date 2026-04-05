@@ -33,9 +33,8 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
   - Backend: DTO + validacion `newPassword == confirmacion`.
   - Frontend test-ui: formulario y validacion local.
 
-- [ ] Reducir fuga de informacion en login de cuentas Google-only:
-  - Actualmente devuelve mensaje especifico ("cuenta vinculada a Google"), lo que ayuda a enumerar cuentas.
-  - Definir modo estricto (mensaje generico) o dejarlo configurable.
+- [x] Reducir fuga de informacion en login de cuentas Google-only:
+  - Unificado con credencialesInvalidas. Los 3 casos de fallo (no existe, Google-only, password incorrecto) retornan el mismo mensaje.
 
 - [ ] Completar auditoria con `ip` y `user_agent` en eventos sensibles:
   - Hay acciones que se registran con `null` en esos campos.
@@ -47,9 +46,8 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
 - [x] Revisar configuracion de `UseForwardedHeaders` para Fly/proxy real:
   - En producción se limpian `KnownNetworks`/`KnownProxies` para confiar en el proxy de Fly.io.
 
-- [ ] Investigar por que `dotnet build AuthService.sln` falla localmente sin errores visibles:
-  - Compilar proyectos individuales (`.csproj`) si funciona.
-  - Solucionar para mantener flujo de build consistente.
+- [x] Investigar por que `dotnet build AuthService.sln` falla localmente sin errores visibles:
+  - Resuelto: compila correctamente tras los cambios de esta iteracion. No habia error de build propiamente dicho.
 
 ## P1 - Cobertura de pruebas faltante
 
@@ -61,9 +59,8 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
   - Redireccion web en `GET /auth/verify-email/{token}` (header Accept: text/html → 3xx).
   - Proteccion de `/metrics` con `Metrics:ApiKey` (sin key → 401, con key correcta → 200).
 
-- [ ] Documentar y automatizar precondicion Docker para tests de integracion:
-  - En local ahora fallan todos si Docker no esta disponible.
-  - Definir check temprano/mensaje amigable o estrategia de skip explicita fuera de CI.
+- [x] Documentar y automatizar precondicion Docker para tests de integracion:
+  - AuthWebAppFactory.InitializeAsync envuelve StartAsync con mensaje accionable si Docker no esta disponible.
 
 ## P2 - Media prioridad
 
@@ -71,8 +68,9 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
   - Hoy depende de `script_DB.sql` manual.
   - Evitar drift entre codigo, tests y base real.
 
-- [ ] Limpiar modelos legacy no usados o desalineados con schema actual:
-  - Ejemplos: propiedades heredadas en `Usuario` y modelos residuales.
+- [x] Limpiar modelos legacy no usados o desalineados con schema actual:
+  - Eliminadas `Propietario` y `UsuarioAud` de `Usuario.cs` (no existen en script_DB.sql, cero referencias).
+  - PENDIENTE REVISAR: `UsuariosRepository` retorna columnas distintas segun el metodo (algunos omiten `foto_url`, `proveedor_login`). Puede ser intencional por rendimiento.
 
 - [ ] Mejorar hardening HTTP:
   - Evaluar `Content-Security-Policy` y `Strict-Transport-Security` en produccion.
