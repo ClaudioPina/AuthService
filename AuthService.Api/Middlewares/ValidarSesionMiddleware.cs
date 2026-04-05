@@ -48,7 +48,13 @@ namespace AuthService.Api.Middlewares
                 return;
             }
 
-            var idSesion = long.Parse(sesionIdClaim.Value);
+            if (!long.TryParse(sesionIdClaim.Value, out var idSesion))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsJsonAsync(new { message = "Sesión inválida." });
+                return;
+            }
+
             var cacheKey = $"sess:{idSesion}";
 
             // 1. Intentar leer del cache. Si Redis no está disponible, continuar hacia la BD.

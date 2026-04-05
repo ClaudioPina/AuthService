@@ -14,5 +14,10 @@ namespace AuthService.Api.Dtos.Auth
         /// Nueva contraseña en texto plano.
         /// </summary>
         public string NewPassword { get; set; } = null!;
+
+        /// <summary>
+        /// Confirmación de la nueva contraseña. Debe coincidir con NewPassword.
+        /// </summary>
+        public string NewPasswordConfirmacion { get; set; } = null!;
     }
 }

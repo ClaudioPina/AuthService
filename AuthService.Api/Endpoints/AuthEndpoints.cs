@@ -65,13 +65,19 @@ namespace AuthService.Api.Endpoints
                 .WithOpenApi()
                 .RequireRateLimiting("forgotpassword-policy");
 
-            auth.MapPost("/reset-password", async (ResetPasswordRequest req, IAutenticacionService svc) =>
-                await svc.ResetPasswordAsync(req))
+            auth.MapPost("/reset-password", async (ResetPasswordRequest req, IAutenticacionService svc, HttpContext ctx) =>
+                await svc.ResetPasswordAsync(
+                    req,
+                    ctx.Connection.RemoteIpAddress?.ToString(),
+                    ctx.Request.Headers["User-Agent"].ToString()))
                 .WithName("ResetPassword")
                 .WithOpenApi();
 
-            auth.MapGet("/confirm-change-password/{token}", async (string token, IAutenticacionService svc) =>
-                await svc.ConfirmPasswordChangeAsync(token))
+            auth.MapGet("/confirm-change-password/{token}", async (string token, IAutenticacionService svc, HttpContext ctx) =>
+                await svc.ConfirmPasswordChangeAsync(
+                    token,
+                    ctx.Connection.RemoteIpAddress?.ToString(),
+                    ctx.Request.Headers["User-Agent"].ToString()))
                 .WithName("ConfirmChangePassword")
                 .WithOpenApi();
 
@@ -110,7 +116,11 @@ namespace AuthService.Api.Endpoints
                 ChangePasswordRequest req,
                 IAutenticacionService svc,
                 HttpContext ctx) =>
-                await svc.ChangePasswordAsync(req, GetUserId(ctx)))
+                await svc.ChangePasswordAsync(
+                    req,
+                    GetUserId(ctx),
+                    ctx.Connection.RemoteIpAddress?.ToString(),
+                    ctx.Request.Headers["User-Agent"].ToString()))
                 .RequireAuthorization()
                 .WithName("ChangePassword")
                 .WithOpenApi();
@@ -121,7 +131,10 @@ namespace AuthService.Api.Endpoints
                 .WithOpenApi();
 
             auth.MapPost("/logout-all", async (IAutenticacionService svc, HttpContext ctx) =>
-                await svc.LogoutAllAsync(GetUserId(ctx)))
+                await svc.LogoutAllAsync(
+                    GetUserId(ctx),
+                    ctx.Connection.RemoteIpAddress?.ToString(),
+                    ctx.Request.Headers["User-Agent"].ToString()))
                 .RequireAuthorization()
                 .WithOpenApi();
 
@@ -134,7 +147,11 @@ namespace AuthService.Api.Endpoints
                 long idSesion,
                 IAutenticacionService svc,
                 HttpContext ctx) =>
-                await svc.RevokeSessionAsync(idSesion, GetUserId(ctx)))
+                await svc.RevokeSessionAsync(
+                    idSesion,
+                    GetUserId(ctx),
+                    ctx.Connection.RemoteIpAddress?.ToString(),
+                    ctx.Request.Headers["User-Agent"].ToString()))
                 .RequireAuthorization()
                 .WithOpenApi();
 

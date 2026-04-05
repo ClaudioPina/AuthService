@@ -216,8 +216,25 @@ var app = builder.Build();
     if (string.IsNullOrWhiteSpace(cfg["Email:FromAddress"]))
         errores.Add("Email:FromAddress es obligatorio.");
 
-    if (string.IsNullOrWhiteSpace(cfg["Google:ClientId"]))
-        errores.Add("Google:ClientId es obligatorio para el login con Google.");
+    // Validación condicional según el proveedor de email configurado.
+    var emailProviderCfg = cfg["Email:Provider"] ?? "Resend";
+    if (emailProviderCfg.Equals("Resend", StringComparison.OrdinalIgnoreCase))
+    {
+        if (string.IsNullOrWhiteSpace(cfg["Email:ResendApiKey"]))
+            errores.Add("Email:ResendApiKey es obligatorio cuando Email:Provider es 'Resend'.");
+    }
+    else if (emailProviderCfg.Equals("Smtp", StringComparison.OrdinalIgnoreCase))
+    {
+        if (string.IsNullOrWhiteSpace(cfg["Email:Smtp:Host"]))
+            errores.Add("Email:Smtp:Host es obligatorio cuando Email:Provider es 'Smtp'.");
+        if (string.IsNullOrWhiteSpace(cfg["Email:Smtp:Port"]))
+            errores.Add("Email:Smtp:Port es obligatorio cuando Email:Provider es 'Smtp'.");
+    }
+
+    // Google:ClientId solo es obligatorio si está definido en config (habilita el login con Google).
+    // Si no está presente, el endpoint /auth/google retornará error en runtime pero no impide el arranque.
+    if (cfg["Google:ClientId"] is not null && string.IsNullOrWhiteSpace(cfg["Google:ClientId"]))
+        errores.Add("Google:ClientId está definido pero vacío. Asigna un valor válido o elimina la clave.");
 
     var dbConn = Environment.GetEnvironmentVariable("DATABASE_URL")
                  ?? cfg.GetConnectionString("PostgresDb");
@@ -280,10 +297,19 @@ app.UseExceptionHandler(errorApp =>
 // Procesar X-Forwarded-For y X-Forwarded-Proto desde el proxy de Fly.io.
 // Sin esto, RemoteIpAddress contiene la IP del proxy y el rate limiting y la
 // auditoría operan sobre una IP incorrecta.
-app.UseForwardedHeaders(new ForwardedHeadersOptions
+// En producción se limpian KnownNetworks/KnownProxies para confiar en el proxy
+// de Fly.io, que siempre reemplaza X-Forwarded-For con la IP real del cliente.
+// En desarrollo no hay proxy, así que se usa la configuración por defecto (loopback).
+var forwardedOptions = new ForwardedHeadersOptions
 {
     ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto
-});
+};
+if (!app.Environment.IsDevelopment())
+{
+    forwardedOptions.KnownNetworks.Clear();
+    forwardedOptions.KnownProxies.Clear();
+}
+app.UseForwardedHeaders(forwardedOptions);
 app.UseHttpsRedirection();
 app.UseCors();
 app.UseRateLimiter();

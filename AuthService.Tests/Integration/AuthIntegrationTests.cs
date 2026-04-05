@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using AuthService.Api.Services;
 using FluentAssertions;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AuthService.Tests.Integration
@@ -325,8 +326,9 @@ namespace AuthService.Tests.Integration
             // Usar el token para cambiar contraseña
             var response = await _client.PostAsJsonAsync("/auth/reset-password", new
             {
-                token       = resetToken,
-                newPassword = "NuevoPass1!"
+                token                    = resetToken,
+                newPassword              = "NuevoPass1!",
+                newPasswordConfirmacion  = "NuevoPass1!"
             });
 
             response.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -530,8 +532,9 @@ namespace AuthService.Tests.Integration
 
             var resetResponse = await _client.PostAsJsonAsync("/auth/reset-password", new
             {
-                token       = resetToken,
-                newPassword = "NuevoPass2!"
+                token                   = resetToken,
+                newPassword             = "NuevoPass2!",
+                newPasswordConfirmacion = "NuevoPass2!"
             });
             resetResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
@@ -542,6 +545,224 @@ namespace AuthService.Tests.Integration
 
             var sessionCheck = await clientWithOldToken.GetAsync("/auth/sessions");
             sessionCheck.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        // ── Tests: /auth/me ───────────────────────────────────────────────────────
+
+        [Fact]
+        public async Task Me_WithoutJwt_ShouldReturn401()
+        {
+            var response = await _client.GetAsync("/auth/me");
+            response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+        }
+
+        [Fact]
+        public async Task Me_WithValidJwt_ShouldReturnUserProfile()
+        {
+            var (accessToken, _) = await RegisterVerifyAndLoginAsync("me_profile@example.com");
+
+            var request  = CreateAuthRequest(HttpMethod.Get, "/auth/me", accessToken);
+            var response = await _client.SendAsync(request);
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("email").GetString().Should().Be("me_profile@example.com");
+            body.TryGetProperty("password_hash", out _).Should().BeFalse("no debe exponerse el hash");
+            body.TryGetProperty("google_sub",    out _).Should().BeFalse("no debe exponerse google_sub");
+        }
+
+        // ── Tests: /auth/resend-verification ─────────────────────────────────────
+
+        [Fact]
+        public async Task ResendVerification_AlwaysReturnsSameMessage_EvenForUnknownEmail()
+        {
+            // Email inexistente — no debe revelar si existe o no (previene enumeración)
+            var response = await _client.PostAsJsonAsync("/auth/resend-verification",
+                new { email = "nobody_resend@example.com" });
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            body.GetProperty("message").GetString().Should()
+                .NotBeNullOrEmpty("siempre debe retornar mensaje genérico");
+        }
+
+        [Fact]
+        public async Task ResendVerification_InvalidatesPreviousToken_AndIssuesNew()
+        {
+            var firstLink = await RegisterAndGetVerificationLinkAsync("resend_verify@example.com");
+            var firstToken = firstLink.Split("/").Last();
+
+            // Pedir reenvío — genera un token nuevo
+            await _client.PostAsJsonAsync("/auth/resend-verification",
+                new { email = "resend_verify@example.com" });
+
+            var fake       = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
+            var lastEmail  = fake!.VerificationEmails
+                .Where(e => e.To == "resend_verify@example.com")
+                .Last();
+            var newToken = lastEmail.Link.Split("/").Last();
+
+            // El token anterior ya no debe funcionar
+            var oldResponse = await _client.GetAsync($"/auth/verify-email/{firstToken}");
+            oldResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+            // El nuevo token sí funciona
+            var newResponse = await _client.GetAsync($"/auth/verify-email/{newToken}");
+            newResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        // ── Tests: /auth/confirm-change-password ──────────────────────────────────
+
+        [Fact]
+        public async Task ConfirmChangePassword_WithInvalidToken_ShouldReturn400()
+        {
+            var response = await _client.GetAsync("/auth/confirm-change-password/token_invalido_xyz");
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+
+        [Fact]
+        public async Task ConfirmChangePassword_WithValidToken_ShouldUpdatePassword()
+        {
+            var (accessToken, _) = await RegisterVerifyAndLoginAsync("confirm_change@example.com");
+
+            // Solicitar cambio de contraseña
+            var changeRequest = CreateAuthRequest(HttpMethod.Post, "/auth/change-password", accessToken);
+            changeRequest.Content = JsonContent.Create(new
+            {
+                passwordActual            = "TestPass1!",
+                passwordNueva             = "NuevoPass99!",
+                passwordNuevaConfirmacion = "NuevoPass99!"
+            });
+            var changeResponse = await _client.SendAsync(changeRequest);
+            changeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // Obtener el token del email
+            var fake         = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
+            var confirmEntry = fake!.PasswordChangeVerificationEmails
+                .First(e => e.To == "confirm_change@example.com");
+            var confirmToken = confirmEntry.Link.Split("/").Last();
+
+            // Confirmar el cambio
+            var confirmResponse = await _client.GetAsync($"/auth/confirm-change-password/{confirmToken}");
+            confirmResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // Login con la nueva contraseña debe funcionar
+            var loginResponse = await _client.PostAsJsonAsync("/auth/login",
+                new { email = "confirm_change@example.com", password = "NuevoPass99!" });
+            loginResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+
+        [Fact]
+        public async Task ConfirmChangePassword_TokenCannotBeReused()
+        {
+            var (accessToken, _) = await RegisterVerifyAndLoginAsync("confirm_reuse@example.com");
+
+            var changeRequest = CreateAuthRequest(HttpMethod.Post, "/auth/change-password", accessToken);
+            changeRequest.Content = JsonContent.Create(new
+            {
+                passwordActual            = "TestPass1!",
+                passwordNueva             = "NuevoPass88!",
+                passwordNuevaConfirmacion = "NuevoPass88!"
+            });
+            await _client.SendAsync(changeRequest);
+
+            var fake         = _factory.Services.GetRequiredService<IEmailService>() as FakeEmailService;
+            var confirmEntry = fake!.PasswordChangeVerificationEmails
+                .First(e => e.To == "confirm_reuse@example.com");
+            var confirmToken = confirmEntry.Link.Split("/").Last();
+
+            // Primera confirmación — debe funcionar
+            var first = await _client.GetAsync($"/auth/confirm-change-password/{confirmToken}");
+            first.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            // Segunda confirmación con el mismo token — debe fallar (token ya usado)
+            var second = await _client.GetAsync($"/auth/confirm-change-password/{confirmToken}");
+            second.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+
+        // ── Tests: /auth/google ───────────────────────────────────────────────────
+
+        [Fact]
+        public async Task Google_WithInvalidIdToken_ShouldReturn400()
+        {
+            var response = await _client.PostAsJsonAsync("/auth/google",
+                new { idToken = "token.invalido.google" });
+
+            // El servicio de Google rechaza el token — la app retorna 400
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        }
+
+        // ── Tests: /auth/verify-email modo navegador ──────────────────────────────
+
+        [Fact]
+        public async Task VerifyEmail_WithBrowserHeaders_ShouldRedirect()
+        {
+            var link  = await RegisterAndGetVerificationLinkAsync("browser_verify@example.com");
+            var token = link.Split("/").Last();
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"/auth/verify-email/{token}");
+            request.Headers.Add("Accept", "text/html,application/xhtml+xml");
+
+            // Desactivar auto-redirect para verificar que la respuesta es un 3xx
+            using var noRedirectClient = _factory.CreateClient(
+                new Microsoft.AspNetCore.Mvc.Testing.WebApplicationFactoryClientOptions
+                {
+                    AllowAutoRedirect = false
+                });
+
+            var response = await noRedirectClient.SendAsync(request);
+            ((int)response.StatusCode).Should().BeInRange(300, 399, "debe redirigir al frontend");
+        }
+
+        // ── Tests: /metrics protegido por API key ────────────────────────────────
+
+        [Fact]
+        public async Task Metrics_WithoutApiKey_WhenKeyConfigured_ShouldReturn401()
+        {
+            // Crear un cliente con Metrics:ApiKey configurado
+            using var factory = new AuthWebAppFactory();
+            await ((IAsyncLifetime)factory).InitializeAsync();
+
+            using var protectedFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((_, cfg) =>
+                    cfg.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["Metrics:ApiKey"] = "secret-metrics-key"
+                    }));
+            });
+
+            using var client   = protectedFactory.CreateClient();
+            var response       = await client.GetAsync("/metrics");
+            response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+            await ((IAsyncLifetime)factory).DisposeAsync();
+        }
+
+        [Fact]
+        public async Task Metrics_WithCorrectApiKey_ShouldReturn200()
+        {
+            using var factory = new AuthWebAppFactory();
+            await ((IAsyncLifetime)factory).InitializeAsync();
+
+            using var protectedFactory = factory.WithWebHostBuilder(builder =>
+            {
+                builder.ConfigureAppConfiguration((_, cfg) =>
+                    cfg.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["Metrics:ApiKey"] = "secret-metrics-key"
+                    }));
+            });
+
+            using var client = protectedFactory.CreateClient();
+            var request      = new HttpRequestMessage(HttpMethod.Get, "/metrics");
+            request.Headers.Add("X-Metrics-Token", "secret-metrics-key");
+
+            var response = await client.SendAsync(request);
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            await ((IAsyncLifetime)factory).DisposeAsync();
         }
 
         // ── Helper adicional ──────────────────────────────────────────────────────

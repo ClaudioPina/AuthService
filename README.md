@@ -266,11 +266,16 @@ El proyecto tiene 47 tests en total:
 
 Los **integration tests** levantan la aplicación real con una instancia de PostgreSQL en Docker (via Testcontainers). Reemplazan `IEmailService` e `IHibpService` con fakes para evitar llamadas externas. Todas las clases comparten la misma instancia de la factory via `[Collection("AuthIntegration")]`.
 
+> **Prerequisito**: Docker debe estar corriendo antes de ejecutar los integration tests. Si Docker no está disponible, los tests fallan con `System.InvalidOperationException` al intentar iniciar el contenedor. Para verificar: `docker info`.
+
 ```bash
+# Verificar que Docker está disponible
+docker info
+
 # Solo unitarios (rápidos, sin Docker)
 dotnet test --filter "FullyQualifiedName~Unit"
 
-# Solo integración (requiere Docker)
+# Solo integración (requiere Docker corriendo)
 dotnet test --filter "FullyQualifiedName~Integration"
 ```
 

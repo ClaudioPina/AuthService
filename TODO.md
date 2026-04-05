@@ -29,7 +29,7 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
 
 ## P1 - Alta prioridad
 
-- [ ] Agregar doble campo de nueva contrasena en reset password (`/auth/reset-password`):
+- [x] Agregar doble campo de nueva contrasena en reset password (`/auth/reset-password`):
   - Backend: DTO + validacion `newPassword == confirmacion`.
   - Frontend test-ui: formulario y validacion local.
 
@@ -41,11 +41,11 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
   - Hay acciones que se registran con `null` en esos campos.
   - Pasar contexto desde endpoints para trazabilidad completa.
 
-- [ ] Robustecer `ValidarSesionMiddleware` frente a claim `id_sesion` invalido:
-  - Cambiar `long.Parse(...)` por `TryParse(...)` y responder `401` controlado.
+- [x] Robustecer `ValidarSesionMiddleware` frente a claim `id_sesion` invalido:
+  - `long.Parse` reemplazado por `TryParse` con respuesta `401` controlada.
 
-- [ ] Revisar configuracion de `UseForwardedHeaders` para Fly/proxy real:
-  - Confirmar confianza de proxies/redes para no perder IP real en rate limit y auditoria.
+- [x] Revisar configuracion de `UseForwardedHeaders` para Fly/proxy real:
+  - En producción se limpian `KnownNetworks`/`KnownProxies` para confiar en el proxy de Fly.io.
 
 - [ ] Investigar por que `dotnet build AuthService.sln` falla localmente sin errores visibles:
   - Compilar proyectos individuales (`.csproj`) si funciona.
@@ -53,13 +53,13 @@ Enfocado solo en pendientes reales detectados al revisar codigo, tests, UI, CI/C
 
 ## P1 - Cobertura de pruebas faltante
 
-- [ ] Agregar integration tests para endpoints y flujos no cubiertos:
-  - `/auth/google` (token valido/invalido).
-  - `/auth/me` (401 sin JWT + 200 con JWT).
-  - `/auth/resend-verification` (respuesta generica + invalida token previo).
-  - `/auth/confirm-change-password/{token}` (token valido/invalido/expirado).
-  - Redireccion web en `GET /auth/verify-email/{token}` (modo navegador).
-  - Proteccion de `/metrics` con `Metrics:ApiKey`.
+- [x] Agregar integration tests para endpoints y flujos no cubiertos:
+  - `/auth/google` (token invalido → 400).
+  - `/auth/me` (401 sin JWT + 200 con JWT + campos sensibles ausentes).
+  - `/auth/resend-verification` (mensaje generico + invalida token previo).
+  - `/auth/confirm-change-password/{token}` (token valido, invalido, reutilizado).
+  - Redireccion web en `GET /auth/verify-email/{token}` (header Accept: text/html → 3xx).
+  - Proteccion de `/metrics` con `Metrics:ApiKey` (sin key → 401, con key correcta → 200).
 
 - [ ] Documentar y automatizar precondicion Docker para tests de integracion:
   - En local ahora fallan todos si Docker no esta disponible.

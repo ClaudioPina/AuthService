@@ -197,7 +197,7 @@ namespace AuthService.Api.Services
             if (usuario.PasswordHash == null)
             {
                 _metrics.RecordLogin("invalid_credentials");
-                return Results.BadRequest(new { message = "Esta cuenta está vinculada a Google. Usa el botón 'Iniciar sesión con Google'." });
+                return Results.BadRequest(new { message = "El email o la contraseña son incorrectos." });
             }
 
             if (!PasswordHasher.VerifyPassword(request.Password, usuario.PasswordHash))
@@ -391,13 +391,17 @@ namespace AuthService.Api.Services
 
         // ── Reset password ────────────────────────────────────────────────────────
 
-        public async Task<IResult> ResetPasswordAsync(ResetPasswordRequest request)
+        public async Task<IResult> ResetPasswordAsync(ResetPasswordRequest request, string? ip, string? userAgent)
         {
             if (string.IsNullOrWhiteSpace(request.Token) ||
-                string.IsNullOrWhiteSpace(request.NewPassword))
+                string.IsNullOrWhiteSpace(request.NewPassword) ||
+                string.IsNullOrWhiteSpace(request.NewPasswordConfirmacion))
             {
-                return Results.BadRequest(new { message = "El token y la nueva contraseña son obligatorios." });
+                return Results.BadRequest(new { message = "El token, la nueva contraseña y su confirmación son obligatorios." });
             }
+
+            if (!string.Equals(request.NewPassword, request.NewPasswordConfirmacion, StringComparison.Ordinal))
+                return Results.BadRequest(new { message = "Las contraseñas no coinciden." });
 
             var (isValid, error) = PasswordPolicy.Validate(request.NewPassword);
             if (!isValid)
@@ -453,7 +457,7 @@ namespace AuthService.Api.Services
 
             _logger.LogInformation("Contraseña reseteada para usuario {IdUsuario}", tokenInfo.IdUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(tokenInfo.IdUsuario, "RESET_CONTRASENA", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(tokenInfo.IdUsuario, "RESET_CONTRASENA", ip, userAgent)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de reset."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
@@ -563,7 +567,7 @@ namespace AuthService.Api.Services
 
         // ── Change password ───────────────────────────────────────────────────────
 
-        public async Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, long idUsuario)
+        public async Task<IResult> ChangePasswordAsync(ChangePasswordRequest request, long idUsuario, string? ip, string? userAgent)
         {
             if (string.IsNullOrWhiteSpace(request.PasswordActual) ||
                 string.IsNullOrWhiteSpace(request.PasswordNueva) ||
@@ -613,7 +617,7 @@ namespace AuthService.Api.Services
 
             _logger.LogInformation("Solicitud de cambio de contraseña enviada para usuario {IdUsuario}", idUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "SOLICITUD_CAMBIO_CONTRASENA", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "SOLICITUD_CAMBIO_CONTRASENA", ip, userAgent)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de solicitud de cambio de contraseña."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
@@ -629,7 +633,7 @@ namespace AuthService.Api.Services
             return Results.Ok(new { message = "Te enviamos un correo para confirmar el cambio de contraseña." });
         }
 
-        public async Task<IResult> ConfirmPasswordChangeAsync(string token)
+        public async Task<IResult> ConfirmPasswordChangeAsync(string token, string? ip, string? userAgent)
         {
             if (string.IsNullOrWhiteSpace(token))
                 return Results.BadRequest(new { message = "El token de confirmación es obligatorio." });
@@ -658,7 +662,7 @@ namespace AuthService.Api.Services
 
             _logger.LogInformation("Cambio de contraseña confirmado para usuario {IdUsuario}", resetToken.IdUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(resetToken.IdUsuario, "CAMBIO_CONTRASENA_CONFIRMADO", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(resetToken.IdUsuario, "CAMBIO_CONTRASENA_CONFIRMADO", ip, userAgent)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de confirmación de cambio de contraseña."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
@@ -682,7 +686,7 @@ namespace AuthService.Api.Services
 
         // ── Logout all ────────────────────────────────────────────────────────────
 
-        public async Task<IResult> LogoutAllAsync(long idUsuario)
+        public async Task<IResult> LogoutAllAsync(long idUsuario, string? ip, string? userAgent)
         {
             var sesionesActivas = await _sesionesRepo.ObtenerSesionesActivasPorUsuarioAsync(idUsuario);
             foreach (var s in sesionesActivas)
@@ -692,7 +696,7 @@ namespace AuthService.Api.Services
 
             _logger.LogInformation("Logout all: {Cantidad} sesiones cerradas para usuario {IdUsuario}", cantidad, idUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "LOGOUT_ALL", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "LOGOUT_ALL", ip, userAgent)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de logout all."),
                     TaskContinuationOptions.OnlyOnFaulted);
 
@@ -721,7 +725,7 @@ namespace AuthService.Api.Services
 
         // ── Revoke session ────────────────────────────────────────────────────────
 
-        public async Task<IResult> RevokeSessionAsync(long idSesion, long idUsuario)
+        public async Task<IResult> RevokeSessionAsync(long idSesion, long idUsuario, string? ip, string? userAgent)
         {
             var sesion = await _sesionesRepo.ObtenerSesionPorIdAsync(idSesion);
 
@@ -734,7 +738,7 @@ namespace AuthService.Api.Services
 
             _logger.LogInformation("Sesión {IdSesion} revocada por usuario {IdUsuario}", idSesion, idUsuario);
 
-            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "REVOCACION_SESION", null, null)
+            _ = _auditoriaRepo.RegistrarAsync(idUsuario, "REVOCACION_SESION", ip, userAgent)
                 .ContinueWith(t => _logger.LogWarning(t.Exception, "Error al registrar auditoría de revocación."),
                     TaskContinuationOptions.OnlyOnFaulted);
 

@@ -531,6 +531,10 @@ function renderReset(params) {
           <label for="reset-password">Nueva contrasena</label>
           <input id="reset-password" type="password" placeholder="Nueva clave" required />
         </div>
+        <div class="field">
+          <label for="reset-password-confirm">Confirmar nueva contrasena</label>
+          <input id="reset-password-confirm" type="password" placeholder="Repetir nueva clave" required />
+        </div>
         <div class="form-actions">
           <button class="btn btn-primary" type="submit">Actualizar contrasena</button>
           <span class="route-link" data-link="login">Volver a login</span>
@@ -548,9 +552,16 @@ function renderReset(params) {
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
+        const newPassword = byId("reset-password").value;
+        const confirmation = byId("reset-password-confirm").value;
+        if (newPassword !== confirmation) {
+          showFlash("Las contrasenas no coinciden.", "error");
+          return;
+        }
         const payload = {
           token: tokenInput.value.trim(),
-          newPassword: byId("reset-password").value,
+          newPassword,
+          newPasswordConfirmacion: confirmation,
         };
 
         const result = await apiCall("POST", "/auth/reset-password", payload);
